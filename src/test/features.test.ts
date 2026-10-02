@@ -162,3 +162,52 @@ describe('card and selection prompts', () => {
     expect(t[2].sprints).toBe(1);
   });
 });
+
+import { milestoneFor } from '../reader/controller';
+import { BADGES, nextTargets, perfectChecks, progressOf, streaks, type Stats } from '../gamify/badges';
+
+describe('milestones', () => {
+  const sections = [
+    { word: 0, heading: 'CHAPTER 1 Intro' },
+    { word: 100, heading: 'Reliability' },
+    { word: 400, heading: 'Scalability' },
+  ]; // n = 1000
+  const none = () => 0;
+  it('sparkles for a section, more for chapter quarters, confetti for the chapter, fireworks for the book', () => {
+    expect(milestoneFor(sections, 1000, 90, 101, none, 'Ch 1').m).toMatchObject({ level: 1, title: '+1 section', subtitle: 'Intro' });
+    expect(milestoneFor(sections, 1000, 90, 101, none, 'Ch 1').sectionsDone).toEqual([0]);
+    expect(milestoneFor(sections, 1000, 240, 260, none, 'Ch 1').m).toMatchObject({ level: 2, title: '25% of the chapter' });
+    expect(milestoneFor(sections, 1000, 495, 505, none, 'Ch 1').m?.title).toBe('Halfway through the chapter');
+    const end = milestoneFor(sections, 1000, 990, 1000, none, 'Ch 1');
+    expect(end.m).toMatchObject({ level: 3 });
+    expect(end.sectionsDone).toEqual([2]);
+    const book = milestoneFor(sections, 1000, 990, 1000, (m) => 0.4 + m / 10000, 'Ch 1');
+    expect(book.m).toMatchObject({ level: 4, title: '50% of the book!' });
+    expect(milestoneFor(sections, 1000, 300, 320, none, 'Ch 1').m).toBe(null);
+  });
+});
+
+describe('badges', () => {
+  it('computes current and best streaks', () => {
+    const now = new Date('2026-10-10T15:00:00').getTime();
+    const days = new Set(['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-08', '2026-10-09']);
+    expect(streaks(days, now)).toEqual({ streak: 2, best: 4 }); // today not read yet: yesterday's run still counts
+    days.add('2026-10-10');
+    expect(streaks(days, now).streak).toBe(3);
+  });
+
+  it('counts perfect checks per section quiz', () => {
+    const q = (askedAt: number, score: number, interleaved = false) => ({ sessionId: 1, bookId: 1, chapter: 0, askedAt, score, interleaved }) as never;
+    expect(perfectChecks([q(1, 1), q(1, 0.96), q(2, 1), q(2, 0.5), q(3, 1), q(3, 0.2, true)])).toBe(2);
+  });
+
+  it('shows tier progress and the closest next targets', () => {
+    const zero = Object.fromEntries(Object.keys({ sections: 0, chapters: 0, books: 0, words: 0, minutes: 0, streak: 0, bestStreak: 0, sprints: 0, perfectChecks: 0, deepCorrect: 0, recentComp: 0, cards: 0, reviews: 0, effGain: 0, explanations: 0 }).map((k) => [k, 0])) as unknown as Stats;
+    const s = { ...zero, sections: 8, words: 25000, cards: 1 };
+    const sec = progressOf(BADGES.find((b) => b.id === 'sections')!, s);
+    expect(sec).toMatchObject({ tier: 0, next: 10 });
+    expect(sec.ratio).toBeCloseTo(7 / 9);
+    expect(progressOf(BADGES.find((b) => b.id === 'words')!, s)).toMatchObject({ tier: 1, next: 100000 });
+    expect(nextTargets(s, 2).map((p) => p.def.id)).toEqual(['sections', 'cards']);
+  });
+});

@@ -11,6 +11,8 @@ import { assist, fallbackGrade, gradeAnswers, locateQuote, makeCards, makeQuiz, 
 import { cached } from '../ai/cache';
 import { newFsrsCard } from '../srs/schedule';
 import { Pomodoro, Presence, type PhaseEnd, type PresenceState } from '../focus/timer';
+import { checkBadges } from '../gamify/badges';
+import type { Level } from '../fx/celebrate';
 import { moveTo, readTo, timesRead, type CursorState } from './cursor';
 import { median, rangeStats, recentWpm, totals, wpm } from './metrics';
 import type { Marks } from './marks';
@@ -31,6 +33,53 @@ export interface UiHooks {
   toast: (msg: string) => void;
   presence: (s: PresenceState, awayMs: number) => void;
   phaseEnd: (e: PhaseEnd, next: 'idle' | 'focus' | 'break') => void;
+  milestone: (m: Milestone) => void;
+}
+
+export interface Milestone {
+  level: Level; // 1 section · 2 chapter quarter · 3 chapter · 4 book quarter
+  title: string;
+  subtitle?: string;
+  word: number; // where it happened (for placing the sparkle)
+}
+
+const QUARTERS = [0.25, 0.5, 0.75];
+const crossed = (before: number, after: number, marks: number[]) => marks.filter((m) => before < m && after >= m).pop();
+
+/** Biggest milestone reached by moving the furthest-read point from prevMax to newMax. */
+export function milestoneFor(
+  sections: { word: number; heading: string }[],
+  n: number,
+  prevMax: number,
+  newMax: number,
+  bookFrac: (maxPos: number) => number,
+  chapterTitle: string,
+): { m: Milestone | null; sectionsDone: number[] } {
+  const sectionsDone: number[] = [];
+  sections.forEach((_, i) => {
+    const end = sections[i + 1]?.word ?? n;
+    if (prevMax < end && newMax >= end) sectionsDone.push(i);
+  });
+  const word = Math.max(0, newMax - 1);
+  const book = crossed(bookFrac(prevMax), bookFrac(newMax), [...QUARTERS, 0.995]);
+  if (book !== undefined)
+    return {
+      sectionsDone,
+      m: {
+        level: 4,
+        word,
+        title: book >= 0.995 ? 'Book finished! 🏆' : `${Math.round(book * 100)}% of the book!`,
+        subtitle: book >= 0.995 ? 'You read the whole thing. Take a moment to enjoy it.' : 'A big milestone. Keep the streak going.',
+      },
+    };
+  if (prevMax < n && newMax >= n) return { sectionsDone, m: { level: 3, word, title: 'Chapter complete! 🎉', subtitle: chapterTitle } };
+  const q = crossed(prevMax / n, newMax / n, QUARTERS);
+  if (q !== undefined) return { sectionsDone, m: { level: 2, word, title: q === 0.5 ? 'Halfway through the chapter' : `${q * 100}% of the chapter`, subtitle: chapterTitle } };
+  if (sectionsDone.length) {
+    const heading = sections[sectionsDone[sectionsDone.length - 1]].heading.replace(/^chapter\s+\d+\s*/i, '');
+    return { sectionsDone, m: { level: 1, word, title: '+1 section', subtitle: heading } };
+  }
+  return { sectionsDone, m: null };
 }
 
 type PreparedQuiz = Pick<QuizView, 'questions' | 'provider' | 'offline'>;
@@ -55,6 +104,8 @@ export class ReaderController {
   presence: Presence;
   pomo: Pomodoro;
   private focusTimer = 0;
+  /** Share of the whole book read if this chapter's furthest point were `maxPos` (set by the view). */
+  bookFrac: (maxPos: number) => number = () => 0;
 
   constructor(
     public book: Book,
@@ -72,11 +123,12 @@ export class ReaderController {
     this.flushTimer = window.setInterval(() => void this.flush(), 5000);
     const now = Date.now();
     this.presence = new Presence(settings.awaySec, now, (st, awayMs) => {
+      if (this.disposed) return;
       if (st === 'away') this.stopPacer(true);
       this.ui.presence(st, awayMs);
     });
     this.pomo = new Pomodoro(settings, sprintsToday, (e, next) => {
-      void db.focus.add({ ...e, bookId: book.id });
+      void db.focus.add({ ...e, bookId: book.id }).then(() => checkBadges());
       if (next === 'break') {
         this.paused = true;
         this.stopPacer(true);
@@ -138,6 +190,7 @@ export class ReaderController {
   move(kind: MoveKind, to: number) {
     if (this.paused) return;
     const reading = kind === 'next' || kind === 'line' || kind === 'pacer';
+    const prevMax = this.cursor.maxPos;
     if (reading && this.settings.pomodoroOn && this.pomo.phase === 'idle') this.pomo.startFocus(Date.now());
     const m = reading ? readTo(this.cursor, to) : moveTo(this.cursor, to);
     if (m.from === m.to) return;
@@ -157,8 +210,21 @@ export class ReaderController {
     this.marks.refresh(Math.min(m.from, m.to), Math.max(m.from, m.to), reading);
     this.marks.setCursor(this.cursor.pos);
     this.scheduleSave();
+    if (reading && this.cursor.maxPos > prevMax) this.reachMilestones(prevMax, this.cursor.maxPos);
     if (reading) this.afterRead(m.from, m.to);
     this.ui.changed(true);
+  }
+
+  private reachMilestones(prevMax: number, newMax: number) {
+    const { m, sectionsDone } = milestoneFor(this.model.stream.sections, this.n, prevMax, newMax, this.bookFrac, this.book.chapters[this.chapter]?.title ?? '');
+    if (m) this.ui.milestone(m);
+    if (sectionsDone.length) {
+      const ts = Date.now();
+      void db.milestones
+        .bulkPut(sectionsDone.map((section) => ({ bookId: this.book.id!, chapter: this.chapter, section, ts })))
+        .then(() => this.saveState())
+        .then(() => checkBadges());
+    }
   }
 
   private afterRead(from: number, to: number) {
@@ -366,6 +432,7 @@ export class ReaderController {
       ts: Date.now(),
     }));
     await db.questions.bulkAdd(recs);
+    void checkBadges();
     this.scores.push(...out.map((g) => g.score));
     return out;
   }
@@ -439,7 +506,10 @@ export class ReaderController {
     // explanations of hard spots are kept for the Progress page
     if (view.mode === 'explain') {
       if (id) await db.clarifications.update(id, rec);
-      else id = await db.clarifications.add(rec);
+      else {
+        id = await db.clarifications.add(rec);
+        void checkBadges();
+      }
     }
     return { text, id: id ?? 0 };
   }
@@ -473,6 +543,7 @@ export class ReaderController {
         fsrs: newFsrsCard(new Date(now)),
       })),
     );
+    void checkBadges();
     return drafts.length;
   }
 
@@ -609,8 +680,15 @@ export class ReaderController {
     });
   }
 
+  private lastBadgeCheck = 0;
+  private disposed = false;
+
   async flush() {
     if (!this.events.length) return;
+    if (Date.now() - this.lastBadgeCheck > 60000) {
+      this.lastBadgeCheck = Date.now();
+      setTimeout(() => void checkBadges(), 500); // words, minutes, streaks
+    }
     const id = await this.ensureSession();
     const q = this.queue.splice(0);
     if (q.length) {
@@ -631,6 +709,7 @@ export class ReaderController {
   }
 
   dispose() {
+    this.disposed = true;
     this.stopPacer(false);
     clearInterval(this.flushTimer);
     clearInterval(this.focusTimer);

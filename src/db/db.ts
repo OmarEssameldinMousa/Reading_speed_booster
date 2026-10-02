@@ -169,6 +169,22 @@ export interface FocusRec {
   bookId?: number;
 }
 
+/** A section you finished reading for the first time. */
+export interface MilestoneRec {
+  bookId: number;
+  chapter: number;
+  section: number;
+  ts: number;
+}
+
+/** An unlocked badge tier, id `${badge}:${tier}`. */
+export interface AchievementRec {
+  id: string;
+  badge: string;
+  tier: number;
+  at: number;
+}
+
 export interface OverrideRec {
   bookId: number;
   key: string;
@@ -191,6 +207,8 @@ class DB extends Dexie {
   reviews!: Table<ReviewRec, number>;
   cache!: Table<{ key: string; value: unknown; ts: number }, string>;
   focus!: Table<FocusRec, number>;
+  milestones!: Table<MilestoneRec, [number, number, number]>;
+  achievements!: Table<AchievementRec, string>;
   overrides!: Table<OverrideRec, [number, string]>;
   settings!: Table<{ key: string; value: unknown }, string>;
 
@@ -216,6 +234,10 @@ class DB extends Dexie {
       reviews: '++id, cardId, ts',
       cache: 'key',
       focus: '++id, start',
+    });
+    this.version(3).stores({
+      milestones: '[bookId+chapter+section], bookId, ts',
+      achievements: 'id, at',
     });
   }
 }
@@ -258,6 +280,9 @@ export interface Settings {
   longBreakEvery: number;
   awaySec: number; // no input for this long → "still reading?"
   dailyMinutes: number; // reading-time goal
+  // motivation
+  celebrations: boolean;
+  celebrationSound: boolean;
   // reader
   theme: 'paper' | 'night';
   pageWidth: number;
@@ -292,6 +317,8 @@ export const DEFAULT_SETTINGS: Settings = {
   longBreakEvery: 4,
   awaySec: 90,
   dailyMinutes: 30,
+  celebrations: true,
+  celebrationSound: false,
   theme: 'paper',
   pageWidth: 880,
 };

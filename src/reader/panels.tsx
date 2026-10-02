@@ -433,12 +433,21 @@ export function BreakModal({ remaining, long, sprint, over, onSkip, onBack }: { 
 }
 
 export function StillHere({ away, onBack }: { away: boolean; onBack: () => void }) {
+  // any sign of life dismisses it, even if the page-wide listeners missed it
+  useEffect(() => {
+    const k = () => onBack();
+    window.addEventListener('keydown', k, true);
+    return () => window.removeEventListener('keydown', k, true);
+  }, [onBack]);
   return away ? (
-    <div className="away-overlay" onPointerDown={onBack}>
+    <div className="away-overlay" onPointerDown={onBack} onPointerMove={onBack} onWheel={onBack}>
       <div className="away-card">
         <div className="eyebrow">Paused</div>
         <h2>You stepped away</h2>
         <p className="muted">Your reading time and focus sprint are paused. Move the mouse or press any key to continue.</p>
+        <button className="primary" onClick={onBack} autoFocus>
+          I'm back
+        </button>
       </div>
     </div>
   ) : (

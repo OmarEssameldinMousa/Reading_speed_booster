@@ -53,10 +53,17 @@ Click **Test connection** on each one. Without a key the app still works: the se
    <kbd>Enter</kbd> accepts the suggestion.
 7. **Focus checks.** Every 5–10 minutes: *where was your mind just now?* (on the text / somewhere else / zoned out).
 8. **Time & presence.** Reading time only counts while you're at the screen. After 90 s without a key, click, scroll
-   or mouse move it asks "still reading?"; no answer, or a hidden tab, counts as away and the timers pause.
+   or mouse move it asks "still reading?"; no answer, or a hidden tab, counts as away and the timers pause
+   (a visible window you're not typing in still counts as reading: e.g. the book on one screen, notes on another).
    **Pomodoro sprints** (25/5, with a long break every 4 by default) start with your first move and end with a break screen.
    Your daily minutes goal is shown in the toolbar.
-9. **Pacer** (<kbd>Space</kbd>). It moves the highlight at a set wpm and adapts: +5% after a check scored ≥ 80%, −5% under 60%.
+9. **Celebrations that grow with the milestone.** A small cool sparkle and "+1 section" when you finish a subsection,
+   warm confetti at each quarter of a chapter, a confetti rain and banner when a chapter is done, and fireworks at
+   25/50/75/100% of the book. Optional chime in Settings. Reduced-motion users get the banners without particles.
+10. **Trophies.** Badges with Bronze → Silver → Gold → Platinum tiers (sections, chapters, books, words, minutes,
+    streaks, focus sprints, perfect checks, deep why/how answers, comprehension, speed gains, cards, reviews…).
+    The **Trophies** page and the Library show the ones you're closest to, so there's always a next target.
+11. **Pacer** (<kbd>Space</kbd>). It moves the highlight at a set wpm and adapts: +5% after a check scored ≥ 80%, −5% under 60%.
 
 ## What it measures (Progress page)
 
@@ -90,6 +97,7 @@ a number. It measures your speed and understanding together, so you can see whet
 - `src/reader/`: `cursor.ts` (pure reading model), `metrics.ts`, `marks.ts` (highlight layer), `controller.ts` (moves, sessions, quizzes, detection, pacer), `Read.tsx`, `panels.tsx`
 - `src/ai/`: `providers.ts` (Gemini, Groq), `router.ts` (fallback + usage), `prompts.ts` (quiz, grading, clarify, offline grader)
 - `src/srs/schedule.ts` (FSRS, local grading), `src/focus/timer.ts` (presence + Pomodoro), `src/ai/cache.ts`
+- `src/fx/celebrate.ts` (dependency-free confetti and fireworks), `src/gamify/badges.ts` (trophies and tiers)
 - `src/stats/`, `src/pages/`, `src/db/` (Dexie schema + settings)
 
 ### Token use

@@ -13,6 +13,8 @@ import { ReaderController, type Flag } from './controller';
 import { paragraphAt } from '../pdf/words';
 import { wordsText } from '../pdf/stream';
 import { clock, type PresenceState } from '../focus/timer';
+import { celebrate } from '../fx/celebrate';
+import { bookFraction } from '../stats/progress';
 import { AssistPanel, BreakModal, CardPanel, ProbeModal, QuizPanel, SelectionBar, StillHere, type AssistView, type CardDraftView, type QuizView } from './panels';
 import type { AssistMode } from '../ai/prompts';
 
@@ -82,6 +84,7 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
         probe: () => setProbe(true),
         toast: (m) => setToast(m),
         presence: (p, awayMs) => {
+          if (ctlRef.current && ctlRef.current !== ctl) return; // a replaced reader (e.g. after a code reload)
           setPresence(p);
           if (p === 'present' && awayMs > 60000) setToast(`Welcome back. You were away ${Math.round(awayMs / 60000)} min; the timer waited for you.`);
         },
@@ -90,7 +93,15 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
           else if (e.kind === 'break' && e.completed) setBrk({ over: true });
           tick();
         },
+        milestone: (m) => {
+          if (!ctl.settings.celebrations) return;
+          const r = ctl.marks.rect(m.word);
+          celebrate({ level: m.level, x: r ? r.left + r.width / 2 : undefined, y: r ? r.top : undefined, title: m.title, subtitle: m.subtitle, sound: ctl.settings.celebrationSound });
+        },
       }, sprints);
+      // book progress with this chapter at a given furthest point (for book milestones)
+      const others = (await db.chapters.where('bookId').equals(bookId).toArray()).filter((c) => c.chapter !== chapter);
+      ctl.bookFrac = (maxPos) => bookFraction(book, [...others, { chapter, maxPos, total: model.stream.words.length }]);
       // only when we were waiting for the cursor's page; otherwise scrolling around would snap back
       marks.onMount = (pageIdx) => {
         if (pendingScroll.current === pageIdx) ensureVisible(false);
@@ -127,23 +138,23 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
       }
       ctlRef.current?.activity();
     };
+    // only a hidden tab counts as away; a visible window without focus may still be read
+    // (e.g. the book on one screen while you take notes in another app)
     const vis = () => {
       const p = ctlRef.current?.presence;
       if (!p) return;
-      if (document.visibilityState === 'hidden' || !document.hasFocus()) p.hidden(Date.now());
+      if (document.visibilityState === 'hidden') p.hidden(Date.now());
       else p.visible(Date.now());
     };
     const evs = ['keydown', 'pointerdown', 'pointermove', 'wheel', 'touchstart'];
     for (const ev of evs) window.addEventListener(ev, act, { passive: true, capture: true });
     window.addEventListener('resize', r);
-    window.addEventListener('blur', vis);
     window.addEventListener('focus', vis);
     document.addEventListener('visibilitychange', hide);
     document.addEventListener('visibilitychange', vis);
     return () => {
       for (const ev of evs) window.removeEventListener(ev, act, { capture: true });
       window.removeEventListener('resize', r);
-      window.removeEventListener('blur', vis);
       window.removeEventListener('focus', vis);
       document.removeEventListener('visibilitychange', hide);
       document.removeEventListener('visibilitychange', vis);
@@ -516,7 +527,15 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
           }}
         />
       )}
-      {presence !== 'present' && !brk && <StillHere away={presence === 'away'} onBack={() => ctl.activity()} />}
+      {presence !== 'present' && !brk && (
+        <StillHere
+          away={presence === 'away'}
+          onBack={() => {
+            ctl.activity();
+            setPresence(ctl.presence.state); // never trust a stale overlay
+          }}
+        />
+      )}
       {toast && <div className="toast-msg">{toast}</div>}
     </div>
   );

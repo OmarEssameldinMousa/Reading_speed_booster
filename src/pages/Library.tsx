@@ -1,23 +1,15 @@
 import { useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, dayKey, getSettings, type Book, type ChapterState } from '../db/db';
+import { db, dayKey, getSettings, type Book } from '../db/db';
+import { bookFraction } from '../stats/progress';
+
+export { bookFraction };
 import { openBytes } from '../pdf/doc';
 import { readChapters } from '../pdf/extract';
 import { navigate } from '../router';
 import { aiAvailable } from '../ai/router';
-
-export function bookFraction(book: Book, states: ChapterState[]): number {
-  let done = 0;
-  let total = 0;
-  book.chapters.forEach((c, i) => {
-    if (i < book.startChapter) return;
-    const pages = c.endPage - c.startPage + 1;
-    total += pages;
-    const st = states.find((s) => s.chapter === i);
-    if (st?.total) done += pages * Math.min(1, st.maxPos / st.total);
-  });
-  return total ? done / total : 0;
-}
+import { loadStats, nextTargets } from '../gamify/badges';
+import { Target } from './Trophies';
 
 /** Suggested first chapter: the first entry that looks like real content. */
 function guessStart(chapters: Book['chapters']): number {
@@ -44,7 +36,10 @@ export function Library() {
     ]);
     const todays = sessions.filter((x) => dayKey(x.start) === day);
     const qs = questions.filter((q) => dayKey(q.ts) === day);
+    const stats = await loadStats();
     return {
+      targets: nextTargets(stats, 2),
+      streak: stats.streak,
       words: todays.reduce((a, x) => a + x.fresh + x.reread, 0),
       minutes: todays.reduce((a, x) => a + (x.presentMs ?? x.activeMs), 0) / 60000,
       goal: s.dailyMinutes,
@@ -119,12 +114,23 @@ export function Library() {
                   Review {today.due} card{today.due === 1 ? '' : 's'} first
                 </button>
               )}
+              {today.streak > 0 && <span>🔥 {today.streak}-day streak</span>}
               {!today.ai && (
                 <button className="primary" onClick={() => navigate('#/settings')}>
                   Add a free AI key for comprehension questions
                 </button>
               )}
             </div>
+            {today.targets.length > 0 && (
+              <div className="targets compact">
+                {today.targets.map((p) => (
+                  <Target key={p.def.id} p={p} />
+                ))}
+                <a className="small" href="#/trophies">
+                  All trophies →
+                </a>
+              </div>
+            )}
           </div>
         </section>
       )}

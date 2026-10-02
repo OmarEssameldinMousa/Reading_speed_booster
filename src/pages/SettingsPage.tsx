@@ -76,6 +76,14 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    title: 'Motivation',
+    intro: 'Celebrations grow with the milestone: a sparkle for a section, confetti for a chapter, fireworks for big book milestones and gold trophies.',
+    fields: [
+      { key: 'celebrations', label: 'Celebrations', help: 'Visual celebrations when you finish sections, chapters and books, and when you earn trophies.', kind: 'toggle' },
+      { key: 'celebrationSound', label: 'Celebration sound', help: 'A short chime that rises with the size of the milestone.', kind: 'toggle' },
+    ],
+  },
+  {
     title: 'Reader',
     fields: [
       { key: 'theme', label: 'Theme', help: 'Paper is easier for long daytime reading; night inverts the pages for dark rooms.', kind: 'select', options: [{ value: 'paper', label: 'Paper' }, { value: 'night', label: 'Night' }] },

@@ -1507,3 +1507,243 @@ button.danger-btn:hover:not(:disabled) {
   color: var(--text-2);
   margin: 2px 0 6px;
 }
+
+/* ---------- celebrations ---------- */
+.fx-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 200;
+}
+.fx-float {
+  position: fixed;
+  z-index: 201;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  font-family: var(--ui);
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #1f7a8c;
+  text-shadow: 0 1px 0 #fff;
+  animation: float-up 1.4s ease-out forwards;
+}
+@keyframes float-up {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -60%) scale(0.8);
+  }
+  15% {
+    opacity: 1;
+    transform: translate(-50%, -110%) scale(1.05);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -260%) scale(1);
+  }
+}
+.celebration-banner {
+  position: fixed;
+  z-index: 199;
+  left: 50%;
+  top: 22%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  padding: 18px 34px;
+  border-radius: 18px;
+  color: #3b1d00;
+  cursor: pointer;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 28%);
+  animation: banner-in 0.6s cubic-bezier(0.2, 1.4, 0.4, 1);
+  max-width: calc(100vw - 32px);
+}
+.celebration-banner.level-3 {
+  background: linear-gradient(135deg, #ffe08a, #f4a261);
+}
+.celebration-banner.level-4 {
+  background: linear-gradient(135deg, #ffd700, #ff924c 55%, #ff595e);
+  color: #fff;
+  text-shadow: 0 2px 6px rgb(120 30 0 / 45%);
+  padding: 26px 46px;
+  animation:
+    banner-in 0.7s cubic-bezier(0.2, 1.5, 0.4, 1),
+    glow 1.6s ease-in-out 0.7s infinite alternate;
+}
+.cb-title {
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: 2rem;
+  line-height: 1.1;
+}
+.level-4 .cb-title {
+  font-size: 2.6rem;
+}
+.cb-sub {
+  margin-top: 6px;
+  font-size: 0.95rem;
+  opacity: 0.9;
+}
+@keyframes banner-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.6);
+  }
+}
+@keyframes glow {
+  to {
+    box-shadow:
+      0 24px 70px rgb(0 0 0 / 28%),
+      0 0 60px rgb(255 200 60 / 70%);
+  }
+}
+
+/* ---------- trophies ---------- */
+.trophy-toasts {
+  position: fixed;
+  right: 16px;
+  top: 16px;
+  z-index: 198;
+  display: grid;
+  gap: 10px;
+}
+.trophy-toast {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  background: var(--surface);
+  color: var(--text);
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 16px 10px 12px;
+  box-shadow: 0 16px 40px rgb(0 0 0 / 22%);
+  cursor: pointer;
+  animation: toast-in 0.5s cubic-bezier(0.2, 1.4, 0.4, 1);
+  max-width: min(360px, calc(100vw - 32px));
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(40px) scale(0.9);
+  }
+}
+.tt-icon {
+  font-size: 2rem;
+}
+.tier-0 {
+  --medal: #cd7f32;
+}
+.tier-1 {
+  --medal: #a8b3bd;
+}
+.tier-2 {
+  --medal: #f2b705;
+}
+.tier-3 {
+  --medal: #7fd1e8;
+}
+.trophy-toast {
+  border-color: var(--medal, var(--line));
+}
+.trophy-count {
+  font-family: var(--mono);
+}
+.badge-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+.badge-card {
+  background: var(--surface);
+  border: 2px solid var(--medal, var(--line));
+  border-radius: 14px;
+  padding: 16px;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  text-align: center;
+}
+.badge-card.locked .badge-icon {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+.badge-card:not(.locked) {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--medal) 18%, transparent);
+}
+.badge-icon {
+  font-size: 2.6rem;
+  line-height: 1;
+}
+.badge-icon.small-icon {
+  font-size: 1.6rem;
+}
+.badge-title {
+  font-weight: 700;
+}
+.badge-card .progress-line {
+  width: 100%;
+}
+.medals {
+  display: flex;
+  gap: 6px;
+}
+.medal {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  background: transparent;
+}
+.medal.got.m0 {
+  background: #cd7f32;
+  border-color: #cd7f32;
+}
+.medal.got.m1 {
+  background: #a8b3bd;
+  border-color: #a8b3bd;
+}
+.medal.got.m2 {
+  background: #f2b705;
+  border-color: #f2b705;
+}
+.medal.got.m3 {
+  background: #7fd1e8;
+  border-color: #7fd1e8;
+}
+.maxed {
+  color: var(--accent);
+  font-weight: 600;
+}
+.targets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+.targets.compact {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  align-items: center;
+}
+.target {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.target-main {
+  flex: 1;
+  min-width: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .celebration-banner,
+  .trophy-toast,
+  .fx-float {
+    animation: none;
+  }
+}
+button.primary kbd {
+  background: transparent;
+  color: inherit;
+  border-color: color-mix(in srgb, currentColor 45%, transparent);
+}

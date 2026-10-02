@@ -4,6 +4,7 @@ import type { Grade } from 'ts-fsrs';
 import { db, getSettings, type CardRec, type Settings } from '../db/db';
 import { aiAvailable } from '../ai/router';
 import { fallbackGrade, gradeCardAnswer } from '../ai/prompts';
+import { checkBadges } from '../gamify/badges';
 import { configureScheduler, formatDays, localGrade, previewDays, RATING_LABEL, ratingFor, review } from '../srs/schedule';
 
 interface Result {
@@ -111,6 +112,7 @@ function ReviewCard({ card, settings, left, onDone }: { card: CardRec; settings:
   const rate = async (g: Grade) => {
     if (!result) return;
     await review(card, g, { answer, score: result.score, suggested: result.suggested, graded: result.graded });
+    void checkBadges();
     onDone();
   };
 
