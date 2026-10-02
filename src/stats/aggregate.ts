@@ -1,6 +1,6 @@
 // Turn stored sessions, answers and focus checks into the numbers on the Progress page.
 
-import { dayKey, type ProbeState, type QuestionRec, type Session } from '../db/db';
+import { dayKey, type FocusRec, type ProbeState, type QuestionRec, type ReviewRec, type Session } from '../db/db';
 
 const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
@@ -85,4 +85,40 @@ export function recent<T>(rows: T[], pick: (r: T) => number | null, n = 5): numb
       .filter((v): v is number => v !== null)
       .slice(-n),
   );
+}
+
+/** Minutes at the screen and completed sprints for each of the last `days` days. */
+export function timeByDay(sessions: Session[], focus: FocusRec[], days = 14, now = Date.now()): { key: string; minutes: number; sprints: number }[] {
+  const out: { key: string; minutes: number; sprints: number }[] = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - i);
+    out.push({ key: dayKey(d.getTime()), minutes: 0, sprints: 0 });
+  }
+  const at = new Map(out.map((r) => [r.key, r]));
+  for (const s of sessions) {
+    const r = at.get(dayKey(s.start));
+    if (r) r.minutes += (s.presentMs ?? s.activeMs) / 60000;
+  }
+  for (const f of focus) {
+    const r = at.get(dayKey(f.start));
+    if (r && f.kind === 'focus' && f.completed) r.sprints++;
+  }
+  return out;
+}
+
+/** Share of reviews of already-seen cards that you remembered (rated Hard or better). */
+export function recallRate(reviews: ReviewRec[]): number | null {
+  const seen = new Set<number>();
+  let n = 0;
+  let ok = 0;
+  for (const r of [...reviews].sort((a, b) => a.ts - b.ts)) {
+    if (seen.has(r.cardId)) {
+      n++;
+      if (r.rating >= 2) ok++;
+    }
+    seen.add(r.cardId);
+  }
+  return n ? ok / n : null;
 }

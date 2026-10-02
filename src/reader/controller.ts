@@ -7,11 +7,14 @@ import { sectionIndexAt, sectionRange, sentenceAt, wordsText } from '../pdf/stre
 import { paragraphAt, type WordLayout } from '../pdf/words';
 import { keyTerms } from '../text/keyterms';
 import { aiAvailable } from '../ai/router';
-import { clarify as askClarify, fallbackGrade, gradeAnswers, locateQuote, makeQuiz, type Grade } from '../ai/prompts';
+import { assist, fallbackGrade, gradeAnswers, locateQuote, makeCards, makeQuiz, type CardDraft, type Grade } from '../ai/prompts';
+import { cached } from '../ai/cache';
+import { newFsrsCard } from '../srs/schedule';
+import { Pomodoro, Presence, type PhaseEnd, type PresenceState } from '../focus/timer';
 import { moveTo, readTo, timesRead, type CursorState } from './cursor';
 import { median, rangeStats, recentWpm, totals, wpm } from './metrics';
 import type { Marks } from './marks';
-import type { ClarifyView, QuizView } from './panels';
+import type { AssistView, QuizView } from './panels';
 
 export interface Flag {
   word: number; // paragraph start
@@ -21,11 +24,13 @@ export interface Flag {
 }
 
 export interface UiHooks {
-  changed: () => void; // cursor/stats changed
+  changed: (moved?: boolean) => void; // stats changed; moved = the cursor moved (scroll to it)
   quiz: (section: number) => void; // a section ended: open its quiz
   flag: (f: Flag) => void; // offer an explanation
   probe: () => void; // ask where the mind was
   toast: (msg: string) => void;
+  presence: (s: PresenceState, awayMs: number) => void;
+  phaseEnd: (e: PhaseEnd, next: 'idle' | 'focus' | 'break') => void;
 }
 
 type PreparedQuiz = Pick<QuizView, 'questions' | 'provider' | 'offline'>;
@@ -47,6 +52,9 @@ export class ReaderController {
   sessionQuizzed: number[] = [];
   scores: number[] = []; // comprehension per answered question, this session
   lastProbe: { state: ProbeState; t: number } | null = null;
+  presence: Presence;
+  pomo: Pomodoro;
+  private focusTimer = 0;
 
   constructor(
     public book: Book,
@@ -58,9 +66,45 @@ export class ReaderController {
     public quizzed: Set<number>,
     public settings: Settings,
     private ui: UiHooks,
+    sprintsToday = 0,
   ) {
     this.nextProbeAt = this.probeGap();
     this.flushTimer = window.setInterval(() => void this.flush(), 5000);
+    const now = Date.now();
+    this.presence = new Presence(settings.awaySec, now, (st, awayMs) => {
+      if (st === 'away') this.stopPacer(true);
+      this.ui.presence(st, awayMs);
+    });
+    this.pomo = new Pomodoro(settings, sprintsToday, (e, next) => {
+      void db.focus.add({ ...e, bookId: book.id });
+      if (next === 'break') {
+        this.paused = true;
+        this.stopPacer(true);
+      }
+      this.ui.phaseEnd(e, next);
+    });
+    this.focusTimer = window.setInterval(() => this.tickFocus(), 1000);
+  }
+
+  // ---------- presence & pomodoro ----------
+
+  private tickFocus() {
+    const now = Date.now();
+    this.presence.tick(now);
+    this.pomo.tick(now, this.presence.state !== 'away');
+  }
+
+  /** Keyboard, mouse or scroll: you're here. */
+  activity() {
+    this.presence.input(Date.now());
+  }
+
+  /** Close the break screen: skip the rest of the break, or the break ended. */
+  endBreak() {
+    if (this.pomo.phase === 'break') this.pomo.stop(Date.now());
+    this.paused = false;
+    this.resumePacer();
+    this.ui.changed();
   }
 
   get n() {
@@ -94,6 +138,7 @@ export class ReaderController {
   move(kind: MoveKind, to: number) {
     if (this.paused) return;
     const reading = kind === 'next' || kind === 'line' || kind === 'pacer';
+    if (reading && this.settings.pomodoroOn && this.pomo.phase === 'idle') this.pomo.startFocus(Date.now());
     const m = reading ? readTo(this.cursor, to) : moveTo(this.cursor, to);
     if (m.from === m.to) return;
     const prev = this.events[this.events.length - 1];
@@ -113,7 +158,7 @@ export class ReaderController {
     this.marks.setCursor(this.cursor.pos);
     this.scheduleSave();
     if (reading) this.afterRead(m.from, m.to);
-    this.ui.changed();
+    this.ui.changed(true);
   }
 
   private afterRead(from: number, to: number) {
@@ -140,16 +185,21 @@ export class ReaderController {
       }
     }
 
-    // A sentence read N times → offer to explain its paragraph.
-    const last = to - 1;
-    const [sa, sb] = sentenceAt(s, last);
-    if (last === sb - 1) {
+    // A sentence read N times → offer to explain its paragraph (and make a card from it).
+    for (let w = from; w < to; w++) {
+      const [pa, pb] = paragraphAt(s, w);
+      // a sentence never runs past its paragraph (bullet items often have no period)
+      const [sa0, sb0] = sentenceAt(s, w);
+      const sa = Math.max(sa0, pa);
+      const sb = Math.min(sb0, pb);
+      if (w !== sb - 1) continue; // only sentences finished by this move
       const reads = timesRead(this.cursor.counts, sa, sb);
-      const [pa, pb] = paragraphAt(s, last);
       if (reads >= st.rereadThreshold && !this.flagged.has(pa)) {
         this.flagged.add(pa);
         this.marks.flag(pa, pb, true);
         this.ui.flag({ word: pa, end: pb, reason: 'rereads', reads });
+        void this.autoCard(pa, pb);
+        break;
       }
     }
 
@@ -350,28 +400,124 @@ export class ReaderController {
     return locateQuote(this.model.stream.words, a, b, q.evidence);
   }
 
-  // ---------- clarify ----------
+  // ---------- selection: cards, ask, key points, explain ----------
 
   paragraphText(word: number) {
     const [a, b] = paragraphAt(this.model.stream, word);
     return wordsText(this.model.stream, a, b);
   }
 
-  async clarify(view: ClarifyView, id: number | undefined): Promise<{ text: string; id: number }> {
-    const sec = sectionIndexAt(this.model.stream, view.word);
-    const r = await askClarify({
+  /** A window of text around [from, to), inside its section: enough context, few tokens. */
+  contextFor(from: number, to: number, pad = 220) {
+    const s = this.model.stream;
+    const sec = sectionIndexAt(s, from);
+    const [a, b] = sectionRange(s, sec);
+    return { section: sec, heading: this.heading(sec), context: wordsText(s, Math.max(a, from - pad), Math.min(b, to + pad)) };
+  }
+
+  private async summaryOf(section: number): Promise<string | undefined> {
+    return (await db.sections.get([this.book.id!, this.chapter, section]))?.summary || undefined;
+  }
+
+  async assist(view: AssistView, id: number | undefined): Promise<{ text: string; id: number }> {
+    const { section, heading, context } = this.contextFor(view.from, view.to);
+    const input = {
       book: this.book.title,
-      heading: this.heading(sec),
-      paragraph: view.paragraph,
-      context: this.sectionText(sec),
-      history: view.messages,
+      heading,
+      summary: await this.summaryOf(section),
+      passage: view.passage,
+      context,
+      mode: view.mode,
       reason: view.reason,
-    });
-    const messages = [...view.messages, { role: 'assistant' as const, text: r.value }];
-    const rec = { bookId: this.book.id!, chapter: this.chapter, word: view.word, text: view.paragraph, reason: view.reason, reads: view.reads, messages, ts: Date.now() };
-    if (id) await db.clarifications.update(id, rec);
-    else id = await db.clarifications.add(rec);
-    return { text: r.value, id };
+      history: view.messages,
+    };
+    // the first answer for explain / key points is cached per passage
+    const fresh = () => assist(input).then((r) => r.value);
+    const text = view.messages.length === 0 && view.mode !== 'ask' ? await cached(['assist', view.mode, view.passage], fresh) : await fresh();
+    const messages = [...view.messages, { role: 'assistant' as const, text }];
+    const rec = { bookId: this.book.id!, chapter: this.chapter, word: view.from, text: view.passage, reason: view.reason ?? 'asked', reads: view.reads, messages, ts: Date.now() };
+    // explanations of hard spots are kept for the Progress page
+    if (view.mode === 'explain') {
+      if (id) await db.clarifications.update(id, rec);
+      else id = await db.clarifications.add(rec);
+    }
+    return { text, id: id ?? 0 };
+  }
+
+  /** Draft cards for a passage (cached, so selecting the same text twice is free). */
+  async draftCards(from: number, to: number, max = 3): Promise<CardDraft[]> {
+    const passage = wordsText(this.model.stream, from, to);
+    const { heading, context } = this.contextFor(from, to);
+    const n = Math.min(max, Math.max(1, Math.ceil((to - from) / 45)));
+    return cached(['cards', String(n), passage], async () => (await makeCards({ book: this.book.title, heading, passage, context, max: n })).value);
+  }
+
+  async saveCards(drafts: CardDraft[], from: number, to: number, origin: 'manual' | 'auto'): Promise<number> {
+    const { section, heading } = this.contextFor(from, to);
+    const now = Date.now();
+    const source = wordsText(this.model.stream, from, to);
+    await db.cards.bulkAdd(
+      drafts.map((d) => ({
+        bookId: this.book.id!,
+        chapter: this.chapter,
+        section,
+        heading,
+        wordFrom: from,
+        wordTo: to,
+        source,
+        q: d.q,
+        a: d.a,
+        origin,
+        createdAt: now,
+        due: now,
+        fsrs: newFsrsCard(new Date(now)),
+      })),
+    );
+    return drafts.length;
+  }
+
+  async hasCard(from: number, to: number): Promise<boolean> {
+    const cards = await db.cards.where('[bookId+chapter]').equals([this.book.id!, this.chapter]).toArray();
+    return cards.some((c) => c.wordFrom < to && c.wordTo > from);
+  }
+
+  private lastAutoCard = 0;
+
+  /**
+   * The block you keep rereading: the paragraph, grown over neighbouring short paragraphs
+   * (bullet items) that were reread as often, up to ~120 words.
+   */
+  rereadBlock(from: number, to: number): [number, number] {
+    const s = this.model.stream;
+    const reads = timesRead(this.cursor.counts, from, to);
+    let [a, b] = [from, to];
+    const ok = (pa: number, pb: number) => pb - pa < 60 && timesRead(this.cursor.counts, pa, pb) >= Math.min(reads, this.settings.rereadThreshold);
+    while (a > 0 && b - a < 120) {
+      const [pa] = paragraphAt(s, a - 1);
+      if (!ok(pa, a) || sectionIndexAt(s, pa) !== sectionIndexAt(s, from)) break;
+      a = pa;
+    }
+    while (b < s.words.length && b - a < 120) {
+      const [, pb] = paragraphAt(s, b);
+      if (!ok(b, pb) || sectionIndexAt(s, b) !== sectionIndexAt(s, from)) break;
+      b = pb;
+    }
+    return [a, b];
+  }
+
+  /** You keep rereading a paragraph and have no card for it: make one in the background. */
+  private async autoCard(from: number, to: number) {
+    if (!this.settings.autoCards || !aiAvailable(this.settings) || Date.now() - this.lastAutoCard < 3 * 60000) return;
+    [from, to] = this.rereadBlock(from, to);
+    this.lastAutoCard = Date.now();
+    try {
+      if (await this.hasCard(from, to)) return;
+      const drafts = await this.draftCards(from, to, 2);
+      const n = await this.saveCards(drafts, from, to, 'auto');
+      this.ui.toast(`⭐ You kept rereading that part, so I made ${n === 1 ? 'a memory card' : `${n} memory cards`} from it. ${n === 1 ? "It's" : "They're"} in Review.`);
+    } catch {
+      this.lastAutoCard = 0; // failed: allow another try
+    }
   }
 
   // ---------- probes ----------
@@ -479,12 +625,17 @@ export class ReaderController {
       reread: t.reread,
       regressions: t.regressions,
       pacer: this.events.some((e) => e.kind === 'pacer'),
+      presentMs: Math.round(this.presence.presentMs),
+      awayCount: this.presence.awayCount,
     });
   }
 
   dispose() {
     this.stopPacer(false);
     clearInterval(this.flushTimer);
+    clearInterval(this.focusTimer);
+    // an unfinished sprint is still time you spent focused
+    if (this.pomo.phase === 'focus' && this.pomo.elapsed > 60000) this.pomo.stop(Date.now());
     void this.saveState();
     void this.flush();
   }

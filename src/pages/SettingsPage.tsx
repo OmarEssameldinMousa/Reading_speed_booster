@@ -46,6 +46,28 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    title: 'Memory cards',
+    intro: 'Select text while reading and press C, or let the app make cards from paragraphs you keep rereading. The AI grades your answers; FSRS (the scheduler modern Anki uses) picks the next review date.',
+    fields: [
+      { key: 'autoCards', label: 'Auto-cards from rereads', help: 'When you keep rereading a paragraph that has no card yet, the AI makes 1-2 cards from it in the background.', kind: 'toggle' },
+      { key: 'retention', label: 'Target recall rate', help: 'How likely you should be to remember a card when it comes back. Higher means more frequent reviews; 90% is the usual balance.', kind: 'number', min: 70, max: 99, percent: true, unit: '%' },
+      { key: 'maxIntervalDays', label: 'Longest gap between reviews', help: 'No card goes unseen for longer than this.', kind: 'number', min: 7, max: 36500, unit: 'days' },
+    ],
+  },
+  {
+    title: 'Time & breaks',
+    intro: 'Reading time only counts while you are at the screen: typing, moving the mouse, scrolling, or answering "still reading?".',
+    fields: [
+      { key: 'dailyMinutes', label: 'Daily reading goal', help: 'Minutes of focused reading per day, shown in the reader and on the Library page.', kind: 'number', min: 5, max: 600, step: 5, unit: 'min' },
+      { key: 'pomodoroOn', label: 'Focus sprints (Pomodoro)', help: 'A sprint starts with your first move, pauses while you are away, and ends with a break screen.', kind: 'toggle' },
+      { key: 'focusMin', label: 'Sprint length', help: '25 minutes is the classic Pomodoro. Go longer once your focus holds.', kind: 'number', min: 5, max: 120, unit: 'min' },
+      { key: 'breakMin', label: 'Short break', help: 'Look away from the screen; avoid your phone.', kind: 'number', min: 1, max: 30, unit: 'min' },
+      { key: 'longBreakMin', label: 'Long break', help: 'A longer rest after several sprints.', kind: 'number', min: 5, max: 60, unit: 'min' },
+      { key: 'longBreakEvery', label: 'Long break every', help: 'Number of sprints before a long break.', kind: 'number', min: 2, max: 10, unit: 'sprints' },
+      { key: 'awaySec', label: 'Ask "still reading?" after', help: 'Seconds without any key, click, scroll or mouse movement. If you don\'t answer within 30 seconds, you count as away and the timers pause.', kind: 'number', min: 30, max: 900, step: 10, unit: 'sec' },
+    ],
+  },
+  {
     title: 'Speed training',
     intro: 'The pacer moves the highlight for you. Pushing slightly past your comfortable speed trains faster reading, but only while comprehension holds.',
     fields: [

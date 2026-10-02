@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie';
+import type { Card as FsrsCard } from 'ts-fsrs';
 import type { OutlineChapter } from '../pdf/extract';
 
 export interface Book {
@@ -50,6 +51,8 @@ export interface Session {
   start: number;
   end: number;
   activeMs: number;
+  presentMs?: number; // time at the screen with the book open (reading + thinking)
+  awayCount?: number;
   fresh: number;
   reread: number;
   regressions: number;
@@ -125,6 +128,47 @@ export interface UsageRec {
   tokensOut: number;
 }
 
+/** A memory card: question and answer about a passage, scheduled with FSRS. */
+export interface CardRec {
+  id?: number;
+  bookId: number;
+  chapter: number;
+  section: number;
+  heading: string;
+  wordFrom: number;
+  wordTo: number;
+  source: string; // the passage it was made from
+  q: string;
+  a: string;
+  origin: 'manual' | 'auto';
+  createdAt: number;
+  due: number;
+  fsrs: FsrsCard;
+}
+
+export interface ReviewRec {
+  id?: number;
+  cardId: number;
+  ts: number;
+  answer: string;
+  score: number; // 0..1
+  rating: number; // 1 Again, 2 Hard, 3 Good, 4 Easy
+  suggested: number; // rating suggested from the grade
+  intervalDays: number;
+  graded: 'ai' | 'local';
+}
+
+export interface FocusRec {
+  id?: number;
+  kind: 'focus' | 'break';
+  start: number;
+  end: number;
+  ms: number; // time actually spent (focus: present reading time)
+  planned: number; // planned ms
+  completed: boolean;
+  bookId?: number;
+}
+
 export interface OverrideRec {
   bookId: number;
   key: string;
@@ -143,6 +187,10 @@ class DB extends Dexie {
   probes!: Table<ProbeRec, number>;
   clarifications!: Table<ClarifyRec, number>;
   usage!: Table<UsageRec, string>;
+  cards!: Table<CardRec, number>;
+  reviews!: Table<ReviewRec, number>;
+  cache!: Table<{ key: string; value: unknown; ts: number }, string>;
+  focus!: Table<FocusRec, number>;
   overrides!: Table<OverrideRec, [number, string]>;
   settings!: Table<{ key: string; value: unknown }, string>;
 
@@ -162,6 +210,12 @@ class DB extends Dexie {
       usage: 'key, day',
       overrides: '[bookId+key], bookId',
       settings: 'key',
+    });
+    this.version(2).stores({
+      cards: '++id, bookId, due, [bookId+chapter]',
+      reviews: '++id, cardId, ts',
+      cache: 'key',
+      focus: '++id, start',
     });
   }
 }
@@ -192,6 +246,18 @@ export interface Settings {
   pacerOn: boolean;
   pacerWpm: number;
   pacerAdapt: boolean;
+  // memory cards
+  autoCards: boolean; // make cards from paragraphs you keep rereading
+  retention: number; // 0..1, FSRS desired retention
+  maxIntervalDays: number;
+  // time & presence
+  pomodoroOn: boolean;
+  focusMin: number;
+  breakMin: number;
+  longBreakMin: number;
+  longBreakEvery: number;
+  awaySec: number; // no input for this long → "still reading?"
+  dailyMinutes: number; // reading-time goal
   // reader
   theme: 'paper' | 'night';
   pageWidth: number;
@@ -216,6 +282,16 @@ export const DEFAULT_SETTINGS: Settings = {
   pacerOn: false,
   pacerWpm: 250,
   pacerAdapt: true,
+  autoCards: true,
+  retention: 0.9,
+  maxIntervalDays: 365,
+  pomodoroOn: true,
+  focusMin: 25,
+  breakMin: 5,
+  longBreakMin: 15,
+  longBreakEvery: 4,
+  awaySec: 90,
+  dailyMinutes: 30,
   theme: 'paper',
   pageWidth: 880,
 };

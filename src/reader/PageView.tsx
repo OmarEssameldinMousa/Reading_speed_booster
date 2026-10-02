@@ -9,16 +9,46 @@ interface Props {
   marks: Marks;
   width: number;
   onWordClick: (w: number) => void;
+  onSelect: (range: [number, number]) => void; // drag across words, or double-click for the paragraph
+  onParagraph: (w: number) => void;
 }
 
+const wordAt = (x: number, y: number): number | null => {
+  const el = document.elementFromPoint(x, y) as HTMLElement | null;
+  const w = el?.dataset?.w;
+  return w === undefined ? null : Number(w);
+};
+
 /** The real book pages (canvas, untouched) with the reading highlight on top. */
-export function Pages({ doc, pages, marks, width, onWordClick }: Props) {
+export function Pages({ doc, pages, marks, width, onWordClick, onSelect, onParagraph }: Props) {
+  const drag = useRef<{ start: number; end: number; moved: boolean } | null>(null);
   return (
     <div
       className="chapter"
-      onClick={(e) => {
-        const w = (e.target as HTMLElement).dataset?.w;
-        if (w !== undefined) onWordClick(Number(w));
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        const w = wordAt(e.clientX, e.clientY);
+        drag.current = w === null ? null : { start: w, end: w, moved: false };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d || !(e.buttons & 1)) return;
+        const w = wordAt(e.clientX, e.clientY);
+        if (w === null || w === d.end) return;
+        d.end = w;
+        d.moved = true;
+        marks.select([Math.min(d.start, d.end), Math.max(d.start, d.end) + 1]);
+      }}
+      onPointerUp={() => {
+        const d = drag.current;
+        drag.current = null;
+        if (!d) return;
+        if (d.moved) onSelect([Math.min(d.start, d.end), Math.max(d.start, d.end) + 1]);
+        else onWordClick(d.start);
+      }}
+      onDoubleClick={(e) => {
+        const w = wordAt(e.clientX, e.clientY);
+        if (w !== null) onParagraph(w);
       }}
     >
       {pages.map((pm, i) => (

@@ -42,8 +42,21 @@ Click **Test connection** on each one. Without a key the app still works: the se
    Questions are prepared in the background while you read the last 30% of the section, so there's no waiting.
 4. **Stuck?** After you've read the same sentence 3 times, or slowed down a lot on a paragraph, a chip offers an explanation:
    plain words, an example, and a check question, with follow-ups. <kbd>?</kbd> asks for one at any time.
-5. **Focus checks.** Every 5–10 minutes: *where was your mind just now?* (on the text / somewhere else / zoned out).
-6. **Pacer** (<kbd>Space</kbd>). It moves the highlight at a set wpm and adapts: +5% after a check scored ≥ 80%, −5% under 60%.
+5. **Select text** by dragging across words (or double-click a paragraph). Then:
+   - <kbd>C</kbd> **memory card**: the AI writes 1–3 question/answer cards from the passage, and you can edit them before saving.
+   - <kbd>A</kbd> **ask** your own question about it, in the context of its section.
+   - <kbd>K</kbd> **key points**: the main point, what to focus on, and what's easy to miss.
+   - <kbd>E</kbd> **explain** it simply.
+   Paragraphs you keep rereading **become cards automatically** if they don't have one yet.
+6. **Review** (spaced repetition). Answer each due card in your own words. The AI grades the meaning and suggests
+   Again / Hard / Good / Easy, and **FSRS** (the scheduler modern Anki uses) shows exactly when the card comes back for each choice.
+   <kbd>Enter</kbd> accepts the suggestion.
+7. **Focus checks.** Every 5–10 minutes: *where was your mind just now?* (on the text / somewhere else / zoned out).
+8. **Time & presence.** Reading time only counts while you're at the screen. After 90 s without a key, click, scroll
+   or mouse move it asks "still reading?"; no answer, or a hidden tab, counts as away and the timers pause.
+   **Pomodoro sprints** (25/5, with a long break every 4 by default) start with your first move and end with a break screen.
+   Your daily minutes goal is shown in the toolbar.
+9. **Pacer** (<kbd>Space</kbd>). It moves the highlight at a set wpm and adapts: +5% after a check scored ≥ 80%, −5% under 60%.
 
 ## What it measures (Progress page)
 
@@ -58,6 +71,7 @@ Click **Test connection** on each one. Without a key the app still works: the se
 
 | Feature | Basis |
 |---|---|
+| Memory cards + FSRS reviews | Spaced retrieval practice, the most robust long-term memory effect |
 | Questions after each section | Retrieval practice (testing effect): recalling strengthens understanding and memory more than rereading |
 | Why/how and apply-it questions | Elaborative interrogation; transfer-appropriate processing |
 | Questions about earlier sections | Spaced and interleaved retrieval |
@@ -75,4 +89,12 @@ a number. It measures your speed and understanding together, so you can see whet
 - `src/pdf/`: outline → chapters, text extraction, classification (body vs. figure, caption, table, code, header), word stream, word layout and boxes
 - `src/reader/`: `cursor.ts` (pure reading model), `metrics.ts`, `marks.ts` (highlight layer), `controller.ts` (moves, sessions, quizzes, detection, pacer), `Read.tsx`, `panels.tsx`
 - `src/ai/`: `providers.ts` (Gemini, Groq), `router.ts` (fallback + usage), `prompts.ts` (quiz, grading, clarify, offline grader)
+- `src/srs/schedule.ts` (FSRS, local grading), `src/focus/timer.ts` (presence + Pomodoro), `src/ai/cache.ts`
 - `src/stats/`, `src/pages/`, `src/db/` (Dexie schema + settings)
+
+### Token use
+- Selection actions (cards, ask, key points, explain) send only ~450 words around the passage, not the whole section.
+- Follow-up chats resend only the last few turns.
+- Card answers are graded with a tiny prompt (question + answer only). Empty or near-verbatim answers are graded locally, with no API call.
+- Explanations, key points and card drafts are cached per passage, so the same selection twice costs nothing.
+- Section quizzes are prefetched once, and the section summary comes back in the same call; summaries then stand in for earlier sections' full text.

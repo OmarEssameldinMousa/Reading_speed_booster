@@ -35,12 +35,21 @@ export function Library() {
   const progress = useLiveQuery(() => db.progress.toArray(), []);
   const today = useLiveQuery(async () => {
     const day = dayKey(Date.now());
-    const [sessions, questions, s] = await Promise.all([db.sessions.where('start').aboveOrEqual(Date.now() - 86400e3).toArray(), db.questions.where('ts').aboveOrEqual(Date.now() - 86400e3).toArray(), getSettings()]);
+    const [sessions, questions, s, due, sprints] = await Promise.all([
+      db.sessions.where('start').aboveOrEqual(Date.now() - 86400e3).toArray(),
+      db.questions.where('ts').aboveOrEqual(Date.now() - 86400e3).toArray(),
+      getSettings(),
+      db.cards.where('due').belowOrEqual(Date.now()).count(),
+      db.focus.where('start').aboveOrEqual(new Date().setHours(0, 0, 0, 0)).filter((f) => f.kind === 'focus' && f.completed).count(),
+    ]);
     const todays = sessions.filter((x) => dayKey(x.start) === day);
     const qs = questions.filter((q) => dayKey(q.ts) === day);
     return {
       words: todays.reduce((a, x) => a + x.fresh + x.reread, 0),
-      minutes: todays.reduce((a, x) => a + x.activeMs, 0) / 60000,
+      minutes: todays.reduce((a, x) => a + (x.presentMs ?? x.activeMs), 0) / 60000,
+      goal: s.dailyMinutes,
+      due,
+      sprints,
       comprehension: qs.length ? qs.reduce((a, q) => a + q.score, 0) / qs.length : null,
       ai: aiAvailable(s),
     };
@@ -90,16 +99,26 @@ export function Library() {
         <section className="today">
           <div className="today-card">
             <div className="eyebrow">Today</div>
+            <div className="goal">
+              <div className="goal-bar">
+                <div style={{ width: `${Math.min(100, (today.minutes / today.goal) * 100)}%` }} />
+              </div>
+              <span>
+                {Math.round(today.minutes)} / {today.goal} min{today.sprints ? ` · ${today.sprints} 🍅` : ''}
+              </span>
+            </div>
             <div className="today-row">
               <span>
                 <b>{today.words}</b> words read
               </span>
               <span>
-                <b>{Math.round(today.minutes)}</b> min of focused reading
-              </span>
-              <span>
                 <b>{today.comprehension === null ? '–' : `${Math.round(today.comprehension * 100)}%`}</b> understood
               </span>
+              {today.due > 0 && (
+                <button className="primary" onClick={() => navigate('#/review')}>
+                  Review {today.due} card{today.due === 1 ? '' : 's'} first
+                </button>
+              )}
               {!today.ai && (
                 <button className="primary" onClick={() => navigate('#/settings')}>
                   Add a free AI key for comprehension questions

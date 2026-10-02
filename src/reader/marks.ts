@@ -31,6 +31,7 @@ export class Marks {
   private els: (HTMLDivElement[] | undefined)[];
   private mounted = new Map<number, HTMLDivElement[]>();
   private cursorWord = -1;
+  private sel: [number, number] | null = null;
   onMount?: (pageIdx: number) => void;
 
   constructor(
@@ -88,8 +89,12 @@ export class Marks {
   private paint(w: number) {
     const list = this.els[w];
     if (!list) return;
-    const cls = `w r${level(this.counts[w])}${w === this.cursorWord ? ' cur' : ''}`;
-    for (const d of list) d.className = cls;
+    const sel = this.sel && w >= this.sel[0] && w < this.sel[1];
+    const cls = `w r${level(this.counts[w])}${w === this.cursorWord ? ' cur' : ''}${sel ? ' sel' : ''}`;
+    for (const d of list) {
+      const flagged = d.classList.contains('flag');
+      d.className = cls + (flagged ? ' flag' : '');
+    }
   }
 
   refresh(from: number, to: number) {
@@ -101,6 +106,14 @@ export class Marks {
     this.cursorWord = w;
     this.paint(prev);
     this.paint(w);
+  }
+
+  /** Show a selection [from, to), or clear it with null. */
+  select(range: [number, number] | null) {
+    const old = this.sel;
+    this.sel = range;
+    if (old) this.refresh(old[0], old[1]);
+    if (range) this.refresh(range[0], range[1]);
   }
 
   /** Mark a paragraph as flagged (needs clarification) or clear it. */

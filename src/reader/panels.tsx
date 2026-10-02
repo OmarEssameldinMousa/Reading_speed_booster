@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import type { Grade, QuizQuestion } from '../ai/prompts';
+import type { AssistMode, Grade, QuizQuestion } from '../ai/prompts';
+import { clock } from '../focus/timer';
 import type { ProbeState } from '../db/db';
 
 export function Modal({ children, onClose, wide }: { children: React.ReactNode; onClose?: () => void; wide?: boolean }) {
@@ -203,36 +204,46 @@ export function QuizPanel({
   );
 }
 
-// ---------------- Clarify ----------------
+// ---------------- Assist: explain / ask / key points ----------------
 
-export interface ClarifyView {
-  word: number;
-  paragraph: string;
-  reason: 'rereads' | 'slow' | 'asked';
+export interface AssistView {
+  mode: AssistMode;
+  from: number;
+  to: number;
+  passage: string;
+  reason?: 'rereads' | 'slow' | 'asked';
   reads: number;
   messages: { role: 'user' | 'assistant'; text: string }[];
   loading: boolean;
   error?: string;
+  id?: number;
 }
 
-export function ClarifyPanel({ view, onAsk, onClose, onRetry }: { view: ClarifyView; onAsk: (q: string) => void; onClose: () => void; onRetry: () => void }) {
+const ASSIST_TITLE: Record<AssistMode, string> = { explain: 'Explain this', ask: 'Ask about this', points: 'Key points' };
+
+export function AssistPanel({ view, onAsk, onClose, onRetry, onCard }: { view: AssistView; onAsk: (q: string) => void; onClose: () => void; onRetry: () => void; onCard: () => void }) {
   const [q, setQ] = useState('');
   const end = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'nearest' });
   }, [view.messages.length, view.loading]);
+  useEffect(() => {
+    if (view.mode === 'ask') input.current?.focus();
+  }, [view.mode, view.from]);
   const why =
-    view.reason === 'rereads' ? `You've read this ${view.reads} times.` : view.reason === 'slow' ? 'You slowed down a lot here.' : 'You asked about this paragraph.';
+    view.reason === 'rereads' ? `You've read this ${view.reads} times.` : view.reason === 'slow' ? 'You slowed down a lot here.' : null;
+  const asking = view.mode === 'ask' && view.messages.length === 0;
   return (
-    <aside className="side-panel" aria-label="Explanation">
+    <aside className="side-panel" aria-label={ASSIST_TITLE[view.mode]}>
       <div className="row">
-        <div className="eyebrow">Explain this</div>
+        <div className="eyebrow">{ASSIST_TITLE[view.mode]}</div>
         <button className="ghost small close" onClick={onClose} aria-label="Close">
           ✕
         </button>
       </div>
-      <p className="small muted">{why}</p>
-      <blockquote className="para-quote">{view.paragraph.length > 420 ? view.paragraph.slice(0, 420) + '…' : view.paragraph}</blockquote>
+      {why && <p className="small muted">{why}</p>}
+      <blockquote className="para-quote">{view.passage.length > 420 ? view.passage.slice(0, 420) + '…' : view.passage}</blockquote>
       <div className="chat">
         {view.messages.map((m, i) => (
           <div key={i} className={'msg ' + m.role}>
@@ -247,9 +258,11 @@ export function ClarifyPanel({ view, onAsk, onClose, onRetry }: { view: ClarifyV
         {view.error && (
           <div className="panel-error">
             {view.error}{' '}
-            <button className="small" onClick={onRetry}>
-              Try again
-            </button>
+            {!/key/i.test(view.error) && (
+              <button className="small" onClick={onRetry}>
+                Try again
+              </button>
+            )}
           </div>
         )}
         <div ref={end} />
@@ -263,12 +276,178 @@ export function ClarifyPanel({ view, onAsk, onClose, onRetry }: { view: ClarifyV
           setQ('');
         }}
       >
-        <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.stopPropagation()} placeholder="Ask a follow-up…" />
+        <input
+          ref={input}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') onClose();
+            e.stopPropagation();
+          }}
+          placeholder={asking ? 'What do you want to know about this?' : 'Ask a follow-up…'}
+        />
         <button type="submit" disabled={!q.trim() || view.loading}>
           Ask
         </button>
       </form>
+      <div className="row panel-foot">
+        <button className="ghost small" onClick={onCard}>
+          ⭐ Make a memory card from this
+        </button>
+      </div>
     </aside>
+  );
+}
+
+// ---------------- Selection ----------------
+
+export function SelectionBar({ words, onAction, onClear }: { words: number; onAction: (a: 'card' | 'ask' | 'points' | 'explain') => void; onClear: () => void }) {
+  return (
+    <div className="selection-bar" role="toolbar" aria-label="Selected text">
+      <span className="small muted">{words} word{words === 1 ? '' : 's'} selected</span>
+      <button className="primary small" onClick={() => onAction('card')} title="Make memory cards (C)">
+        ⭐ Card <kbd>C</kbd>
+      </button>
+      <button className="small" onClick={() => onAction('ask')} title="Ask a question about it (A)">
+        ❓ Ask <kbd>A</kbd>
+      </button>
+      <button className="small" onClick={() => onAction('points')} title="What to focus on (K)">
+        🎯 Key points <kbd>K</kbd>
+      </button>
+      <button className="small" onClick={() => onAction('explain')} title="Explain it simply (E)">
+        🤔 Explain <kbd>E</kbd>
+      </button>
+      <button className="ghost small" onClick={onClear} aria-label="Clear selection">
+        ✕
+      </button>
+    </div>
+  );
+}
+
+// ---------------- Card drafts ----------------
+
+export interface CardDraftView {
+  from: number;
+  to: number;
+  passage: string;
+  status: 'loading' | 'ready' | 'saving' | 'error';
+  drafts: { q: string; a: string; keep: boolean }[];
+  error?: string;
+}
+
+export function CardPanel({ view, onChange, onSave, onClose, onRetry }: { view: CardDraftView; onChange: (d: CardDraftView['drafts']) => void; onSave: () => void; onClose: () => void; onRetry: () => void }) {
+  const kept = view.drafts.filter((d) => d.keep && d.q.trim() && d.a.trim()).length;
+  const edit = (i: number, patch: Partial<CardDraftView['drafts'][number]>) => onChange(view.drafts.map((d, k) => (k === i ? { ...d, ...patch } : d)));
+  return (
+    <aside className="side-panel" aria-label="New memory cards">
+      <div className="row">
+        <div className="eyebrow">New memory cards</div>
+        <button className="ghost small close" onClick={onClose} aria-label="Close">
+          ✕
+        </button>
+      </div>
+      <blockquote className="para-quote">{view.passage.length > 300 ? view.passage.slice(0, 300) + '…' : view.passage}</blockquote>
+      {view.status === 'loading' && (
+        <div className="panel-loading">
+          <div className="spinner" /> Writing cards…
+        </div>
+      )}
+      {view.status === 'error' && (
+        <div className="panel-error">
+          {view.error}{' '}
+          <button className="small" onClick={onRetry}>
+            Try again
+          </button>
+        </div>
+      )}
+      {view.drafts.map((d, i) => (
+        <div key={i} className={'card-draft' + (d.keep ? '' : ' dropped')}>
+          <label className="row small">
+            <input type="checkbox" checked={d.keep} onChange={(e) => edit(i, { keep: e.target.checked })} /> Card {i + 1}
+          </label>
+          <textarea rows={2} value={d.q} onChange={(e) => edit(i, { q: e.target.value })} onKeyDown={(e) => e.stopPropagation()} aria-label="Question" />
+          <textarea rows={2} className="answer" value={d.a} onChange={(e) => edit(i, { a: e.target.value })} onKeyDown={(e) => e.stopPropagation()} aria-label="Answer" />
+        </div>
+      ))}
+      {(view.status === 'ready' || view.status === 'saving') && (
+        <>
+          <p className="small muted">Edit anything you'd phrase differently. Cards you write in your own words stick better.</p>
+          <div className="row">
+            <button className="primary" onClick={onSave} disabled={!kept || view.status === 'saving'}>
+              Save {kept} card{kept === 1 ? '' : 's'}
+            </button>
+            <button className="ghost" onClick={() => onChange([...view.drafts, { q: '', a: '', keep: true }])}>
+              + Add one
+            </button>
+          </div>
+        </>
+      )}
+    </aside>
+  );
+}
+
+// ---------------- Breaks & presence ----------------
+
+const BREAK_TIPS = [
+  'Look at something 6 meters away for 20 seconds.',
+  'Stand up and stretch your back and shoulders.',
+  'Without looking: what were the main points of what you just read?',
+  'Drink some water.',
+  "Leave your phone alone: it isn't a break for your attention.",
+];
+
+export function BreakModal({ remaining, long, sprint, over, onSkip, onBack }: { remaining: () => number; long: boolean; sprint: number; over: boolean; onSkip: () => void; onBack: () => void }) {
+  const [tip] = useState(() => BREAK_TIPS[Math.floor(Math.random() * BREAK_TIPS.length)]);
+  const [remainingMs, setRemaining] = useState(remaining());
+  useEffect(() => {
+    const t = setInterval(() => setRemaining(remaining()), 500);
+    return () => clearInterval(t);
+  }, [remaining]);
+  return (
+    <Modal>
+      <div className="eyebrow">{over ? 'Break over' : `Sprint ${sprint} done · ${long ? 'long break' : 'break'}`}</div>
+      {over ? (
+        <>
+          <h2>Ready for the next sprint?</h2>
+          <p className="muted">The timer starts with your first move.</p>
+          <div className="row end">
+            <button className="primary" autoFocus onClick={onBack}>
+              Back to reading
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="big-timer">{clock(remainingMs)}</div>
+          <p>{tip}</p>
+          <p className="small muted">Real breaks keep your focus fresh for the next sprint.</p>
+          <div className="row end">
+            <button className="ghost" onClick={onSkip}>
+              Skip break
+            </button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+export function StillHere({ away, onBack }: { away: boolean; onBack: () => void }) {
+  return away ? (
+    <div className="away-overlay" onPointerDown={onBack}>
+      <div className="away-card">
+        <div className="eyebrow">Paused</div>
+        <h2>You stepped away</h2>
+        <p className="muted">Your reading time and focus sprint are paused. Move the mouse or press any key to continue.</p>
+      </div>
+    </div>
+  ) : (
+    <div className="flag-chip still-here" role="status">
+      <span>👀 Still reading? Move the mouse or press any key.</span>
+      <button className="primary small" onClick={onBack}>
+        I'm here
+      </button>
+    </div>
   );
 }
 

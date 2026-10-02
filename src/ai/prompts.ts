@@ -153,39 +153,145 @@ export function fallbackGrade(answerKey: string, answer: string, sectionText: st
   };
 }
 
-export interface ClarifyInput {
+// ---------------- Selection helpers: explain / ask / key points ----------------
+
+export type AssistMode = 'explain' | 'ask' | 'points';
+
+export interface AssistInput {
   book: string;
   heading: string;
-  paragraph: string;
-  context: string; // surrounding section text
-  history: ChatMsg[];
-  reason: 'rereads' | 'slow' | 'asked';
+  summary?: string; // short summary of the section, when we have one
+  passage: string; // what the reader selected (or the paragraph they're stuck on)
+  context: string; // a window of text around it, not the whole section (saves tokens)
+  mode: AssistMode;
+  reason?: 'rereads' | 'slow' | 'asked';
+  history: ChatMsg[]; // follow-ups (for "ask", starts with the reader's question)
 }
 
-const CLARIFY = `You are a patient tutor sitting next to a reader of a technical or non-fiction book.
-Explain clearly and concretely. Use plain words, define any jargon, and keep it short. Use **bold** for key terms
-and "- " for bullet points; no headings, no tables. Don't refer to figures or tables you cannot see.`;
+const ASSIST = `You are a patient tutor sitting next to a reader of a technical or non-fiction book.
+Be clear, concrete and brief. Use plain words and define jargon. Use **bold** for key terms and "- " for bullets;
+no headings, no tables. Don't refer to figures or tables you cannot see.`;
 
-export function clarifyPrompt(input: ClarifyInput, p: ProviderName) {
-  const why = input.reason === 'rereads' ? 'The reader has reread this paragraph several times.' : input.reason === 'slow' ? 'The reader slowed down a lot on this paragraph.' : 'The reader asked for help with this paragraph.';
-  const first = `Book: ${input.book}
-Section: ${input.heading || 'Untitled'}
-Context (the surrounding section):
-${clip(input.context, BUDGET[p].earlier)}
-
-PARAGRAPH:
-"""${input.paragraph}"""
-
-${why} Help them understand it. Reply with:
-**In plain words:** the paragraph's point in 2-3 sentences.
+const MODE_TASK: Record<AssistMode, string> = {
+  explain: `Help the reader understand PASSAGE. Reply with:
+**In plain words:** its point in 2-3 sentences.
 **Example:** one concrete example or analogy.
 **Check yourself:** one short question they can answer if they understood.
-Stay under 170 words.`;
-  return { system: CLARIFY, messages: [{ role: 'user' as const, text: first }, ...input.history], temperature: 0.5, maxTokens: 1024 };
+Stay under 170 words.`,
+  points: `The reader lost track of what PASSAGE is trying to say. Reply with:
+**Main point:** one sentence.
+Then 2-4 "- " bullets with the key points to focus on (at most 15 words each).
+**Easy to miss:** one subtle point, if there is one.
+Stay under 120 words.`,
+  ask: `Answer the reader's questions about PASSAGE, using CONTEXT and what you know. If the book doesn't say, say so briefly
+and answer from general knowledge. Stay under 150 words unless they ask for more.`,
+};
+
+/** Keep follow-up threads cheap: only the most recent turns are resent. */
+function recent(history: ChatMsg[], max = 6): ChatMsg[] {
+  const h = history.slice(-max);
+  return h[0]?.role === 'assistant' ? h.slice(1) : h;
 }
 
-export async function clarify(input: ClarifyInput) {
-  return complete((p) => clarifyPrompt(input, p));
+export function assistPrompt(input: AssistInput, p: ProviderName) {
+  const why =
+    input.reason === 'rereads' ? 'The reader has reread this passage several times. ' : input.reason === 'slow' ? 'The reader slowed down a lot on this passage. ' : '';
+  const first = `Book: ${input.book}
+Section: ${input.heading || 'Untitled'}${input.summary ? `\nSection summary: ${input.summary}` : ''}
+CONTEXT (around the passage):
+${clip(input.context, BUDGET[p].earlier)}
+
+PASSAGE:
+"""${clip(input.passage, 4000)}"""
+
+${why}${MODE_TASK[input.mode]}`;
+  const history = recent(input.history);
+  // "ask" puts the reader's question after the passage; the others start with the task itself
+  const messages: ChatMsg[] = input.mode === 'ask' ? [{ role: 'user', text: first + '\n\nQuestion: ' + (history[0]?.text ?? '') }, ...history.slice(1)] : [{ role: 'user', text: first }, ...history];
+  return { system: ASSIST, messages, temperature: 0.4, maxTokens: input.mode === 'points' ? 700 : 1024 };
+}
+
+export async function assist(input: AssistInput) {
+  return complete((p) => assistPrompt(input, p));
+}
+
+// ---------------- Memory cards ----------------
+
+export interface CardDraft {
+  q: string;
+  a: string;
+}
+
+export interface CardInput {
+  book: string;
+  heading: string;
+  passage: string;
+  context: string;
+  max: number;
+}
+
+export function cardsPrompt(input: CardInput, p: ProviderName) {
+  const text = `Book: ${input.book}
+Section: ${input.heading || 'Untitled'}
+CONTEXT (only to understand the passage):
+${clip(input.context, BUDGET[p].earlier)}
+
+PASSAGE TO MEMORIZE:
+"""${clip(input.passage, 4000)}"""
+
+Write between 1 and ${input.max} flashcards for what is worth remembering in PASSAGE.
+- One idea per card. Fewer, better cards: a short passage usually needs 1-2.
+- The question must make sense on its own months from now, without the book: name the topic
+  (e.g. "In data systems, why are systematic faults worse than random hardware faults?").
+- Prefer why / how / what-is-the-difference questions over trivia; no yes/no questions.
+- Answers: at most 30 words, self-contained.
+- Never mention figures, tables, "the text", "the author" or "the passage".
+Return JSON: {"cards": [{"q": string, "a": string}]}`;
+  return { system: TUTOR, messages: [{ role: 'user' as const, text }], json: true, temperature: 0.3, maxTokens: 1500 };
+}
+
+export function checkCards(text: string, max: number): CardDraft[] {
+  const j = parseJson<{ cards?: Record<string, unknown>[] }>(text);
+  const cards = (Array.isArray(j.cards) ? j.cards : [])
+    .map((c) => ({ q: String(c?.q ?? '').trim(), a: String(c?.a ?? '').trim() }))
+    .filter((c) => c.q && c.a)
+    .slice(0, max);
+  if (!cards.length) throw new AiError('No cards in reply');
+  return cards;
+}
+
+export async function makeCards(input: CardInput) {
+  return complete((p) => cardsPrompt(input, p), { check: (t) => checkCards(t, input.max) });
+}
+
+/** Grade a card answer. Tiny prompt: no book text, just the card. */
+export function cardGradePrompt(q: string, key: string, answer: string) {
+  return {
+    system: TUTOR,
+    messages: [
+      {
+        role: 'user' as const,
+        text: `Flashcard question: ${q}
+Correct answer: ${key}
+Reader's answer: ${answer}
+Judge meaning, not wording. Return JSON: {"score": 0 to 1, "feedback": one short sentence to the reader ("you"), saying what was missing or wrong (or confirming it)}`,
+      },
+    ],
+    json: true,
+    temperature: 0.1,
+    maxTokens: 800,
+  };
+}
+
+export function checkCardGrade(text: string): { score: number; feedback: string } {
+  const j = parseJson<{ score?: unknown; feedback?: unknown }>(text);
+  const score = Number(j.score);
+  if (!Number.isFinite(score)) throw new AiError('No score in reply');
+  return { score: Math.max(0, Math.min(1, score)), feedback: String(j.feedback ?? '').trim() };
+}
+
+export async function gradeCardAnswer(q: string, key: string, answer: string) {
+  return complete(() => cardGradePrompt(q, key, answer), { check: checkCardGrade });
 }
 
 /** Find where a quote appears in a list of words (fuzzy: best run of matching tokens). */

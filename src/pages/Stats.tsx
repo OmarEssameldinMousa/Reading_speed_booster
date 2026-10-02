@@ -1,24 +1,29 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/db';
 import { BarChart, Calendar, LineChart, Scatter } from '../stats/charts';
-import { byFocus, byType, checkPoints, recent, sessionRows, wordsByDay } from '../stats/aggregate';
+import { byFocus, byType, checkPoints, recallRate, recent, sessionRows, timeByDay, wordsByDay } from '../stats/aggregate';
 
 const pct = (v: number | null) => (v === null ? '–' : `${Math.round(v * 100)}%`);
 const date = (ts: number) => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
 export function Stats() {
   const data = useLiveQuery(async () => {
-    const [sessions, questions, clarifications, books, probes] = await Promise.all([
+    const [sessions, questions, clarifications, books, probes, sprints, cards, reviews] = await Promise.all([
       db.sessions.toArray(),
       db.questions.toArray(),
       db.clarifications.orderBy('ts').reverse().toArray(),
       db.books.toArray(),
       db.probes.toArray(),
+      db.focus.toArray(),
+      db.cards.count(),
+      db.reviews.toArray(),
     ]);
-    return { sessions, questions, clarifications, books, probes };
+    return { sessions, questions, clarifications, books, probes, sprints, cards, reviews };
   }, []);
   if (!data) return <div className="center-msg">Loading…</div>;
-  const { sessions, questions, clarifications, books, probes } = data;
+  const { sessions, questions, clarifications, books, probes, sprints, cards, reviews } = data;
+  const time = timeByDay(sessions, sprints);
+  const recall = recallRate(reviews);
   const rows = sessionRows(sessions, questions);
   const checks = checkPoints(questions);
   const focus = byFocus(questions);
@@ -26,14 +31,14 @@ export function Stats() {
   const byDay = wordsByDay(sessions);
   const dayValues = [...byDay.values()].filter((v) => v > 0).sort((a, b) => a - b);
   const totalWords = sessions.reduce((a, s) => a + s.fresh + s.reread, 0);
-  const totalMin = sessions.reduce((a, s) => a + s.activeMs, 0) / 60000;
+  const totalMin = sessions.reduce((a, s) => a + (s.presentMs ?? s.activeMs), 0) / 60000;
   const first = rows.length >= 6 ? recent(rows.slice(0, 3), (r) => r.effective, 3) : null;
   const now = recent(rows, (r) => r.effective);
   const effRows = rows.filter((r) => r.effective !== null);
   const onTask = probes.length ? probes.filter((p) => p.state === 'on').length / probes.length : null;
 
   const exportJson = async () => {
-    const tables = ['books', 'chapters', 'sessions', 'events', 'sections', 'questions', 'probes', 'clarifications', 'usage'] as const;
+    const tables = ['books', 'chapters', 'sessions', 'events', 'sections', 'questions', 'probes', 'clarifications', 'cards', 'reviews', 'focus', 'usage'] as const;
     const out: Record<string, unknown> = { exportedAt: new Date().toISOString() };
     for (const t of tables) {
       const rows = await db.table(t).toArray();
@@ -70,6 +75,16 @@ export function Stats() {
         <Tile v={pct(recent(questions, (q) => q.score, 30))} l="understood (last 30 questions)" />
         <Tile v={now === null ? '–' : Math.round(now)} l="effective wpm" sub={first !== null && now !== null ? `${now >= first ? '+' : ''}${Math.round(((now - first) / first) * 100)}% vs. your first sessions` : undefined} />
         <Tile v={pct(onTask)} l="focus checks on-task" />
+        <Tile v={cards} l="memory cards" sub={recall === null ? undefined : `${pct(recall)} remembered on review`} />
+        <Tile v={sprints.filter((f) => f.kind === 'focus' && f.completed).length} l="focus sprints done" />
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <h3>Reading time</h3>
+          <span className="muted small">Minutes at the screen per day (away time doesn't count), last 14 days. Hover for sprints.</span>
+        </div>
+        <BarChart data={time.map((d) => ({ x: 0, y: d.minutes, label: `${date(new Date(d.key + 'T12:00').getTime())}: ${Math.round(d.minutes)} min, ${d.sprints} sprint${d.sprints === 1 ? '' : 's'}` }))} format={(v) => `${Math.round(v)}m`} />
       </div>
 
       <div className="panel">

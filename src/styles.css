@@ -1275,3 +1275,188 @@ button.danger-btn:hover:not(:disabled) {
 .hotspots a:hover {
   text-decoration: underline;
 }
+
+/* ---------- selection ---------- */
+.chapter {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.marks .w.sel,
+.marks .w.sel.cur {
+  background: rgb(42 120 214 / 30%);
+  box-shadow: inset 0 0 0 1px rgb(42 120 214 / 55%);
+}
+.reader.theme-night .marks .w.sel {
+  background: rgb(60 120 220 / 70%);
+}
+.selection-bar {
+  position: fixed;
+  z-index: 45;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 22px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 8px 10px 8px 16px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 22%);
+  max-width: calc(100vw - 32px);
+  animation: rise 0.2s ease-out;
+}
+.selection-bar kbd {
+  margin-left: 2px;
+}
+.card-draft {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+}
+.card-draft.dropped {
+  opacity: 0.5;
+}
+.card-draft textarea {
+  font-family: var(--serif);
+  font-size: 1.02rem;
+}
+.card-draft textarea.answer {
+  font-family: var(--ui);
+  font-size: 0.92rem;
+  background: var(--surface-2);
+}
+.panel-foot {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 8px;
+}
+
+/* ---------- focus clock & presence ---------- */
+.focus-clock {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+}
+.focus-clock .stat-v .muted {
+  font-size: 0.75em;
+}
+.tomato {
+  font-family: var(--mono);
+}
+.tomato.on {
+  color: var(--bad);
+}
+.still-here {
+  bottom: auto;
+  top: 92px;
+}
+.away-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgb(10 10 8 / 55%);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.away-card {
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 16px;
+  padding: 26px 30px;
+  max-width: 420px;
+  text-align: center;
+  box-shadow: 0 30px 80px rgb(0 0 0 / 30%);
+}
+.big-timer {
+  font-family: var(--mono);
+  font-size: 3.4rem;
+  text-align: center;
+  color: var(--accent);
+  margin: 6px 0;
+}
+
+/* ---------- review ---------- */
+.review-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 22px;
+  display: grid;
+  gap: 12px;
+  box-shadow: var(--shadow);
+}
+.review-context {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.big-q {
+  font-size: 1.4rem;
+}
+.grades {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+@media (max-width: 560px) {
+  .grades {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.grade {
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+}
+.grade small {
+  color: var(--muted);
+}
+.grade.suggested {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.source-row {
+  justify-content: space-between;
+}
+.empty {
+  text-align: center;
+  padding: 40px 16px;
+}
+.big-emoji {
+  font-size: 3rem;
+}
+.search {
+  width: 100%;
+  margin-bottom: 12px;
+}
+.card-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+.card-list > li {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.card-q {
+  font-family: var(--serif);
+  font-size: 1.08rem;
+}
+.card-a {
+  color: var(--text-2);
+  margin: 2px 0 6px;
+}

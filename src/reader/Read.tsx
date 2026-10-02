@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import { db, getChapterState, getSettings, patchSettings, type Book, type ProbeState } from '../db/db';
+import { dayKey, db, getChapterState, getSettings, patchSettings, type Book, type ProbeState } from '../db/db';
 import { loadChapter, openBook } from '../pdf/doc';
 import { sectionRange } from '../pdf/stream';
 import { buildVidMap, layoutWords } from '../pdf/words';
@@ -10,7 +10,11 @@ import { aiAvailable } from '../ai/router';
 import { Marks } from './marks';
 import { Pages } from './PageView';
 import { ReaderController, type Flag } from './controller';
-import { ClarifyPanel, ProbeModal, QuizPanel, type ClarifyView, type QuizView } from './panels';
+import { paragraphAt } from '../pdf/words';
+import { wordsText } from '../pdf/stream';
+import { clock, type PresenceState } from '../focus/timer';
+import { AssistPanel, BreakModal, CardPanel, ProbeModal, QuizPanel, SelectionBar, StillHere, type AssistView, type CardDraftView, type QuizView } from './panels';
+import type { AssistMode } from '../ai/prompts';
 
 interface Loaded {
   book: Book;
@@ -32,7 +36,12 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
   const [error, setError] = useState<string>();
   const [, tick] = useReducer((x: number) => x + 1, 0);
   const [quiz, setQuiz] = useState<QuizView | null>(null);
-  const [clar, setClar] = useState<(ClarifyView & { id?: number }) | null>(null);
+  const [assist, setAssist] = useState<AssistView | null>(null);
+  const [cards, setCards] = useState<CardDraftView | null>(null);
+  const [sel, setSel] = useState<[number, number] | null>(null);
+  const [presence, setPresence] = useState<PresenceState>('present');
+  const [brk, setBrk] = useState<{ over: boolean } | null>(null);
+  const [todayMs, setTodayMs] = useState(0); // reading time today before this session
   const [flag, setFlag] = useState<Flag | null>(null);
   const [probe, setProbe] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -41,6 +50,7 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
   const [hint, setHint] = useState(!hintSeen());
   const ctlRef = useRef<ReaderController | null>(null);
   const scrollReq = useRef(false);
+  const pendingScroll = useRef<number | null>(null); // page we jumped to before its words were mounted
 
   // ---------- load ----------
   useEffect(() => {
@@ -52,21 +62,39 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
       const vm = buildVidMap(model);
       const layout = layoutWords(model, vm);
       const st = await getChapterState(bookId, chapter, model.stream.words.length);
+      const midnight = new Date().setHours(0, 0, 0, 0);
+      const [sprints, sessions] = await Promise.all([
+        db.focus.where('start').aboveOrEqual(midnight).filter((f) => f.kind === 'focus' && f.completed).count(),
+        db.sessions.where('start').aboveOrEqual(midnight).toArray(),
+      ]);
+      setTodayMs(sessions.filter((x) => dayKey(x.start) === dayKey(Date.now())).reduce((a, x) => a + (x.presentMs ?? x.activeMs), 0));
       const cursor = { pos: st.pos, maxPos: st.maxPos, counts: st.counts };
       if (at !== undefined && at >= 0 && at < model.stream.words.length) cursor.pos = at; // opened from a hard spot
       const marks = new Marks(model, cursor.counts);
       marks.setCursor(cursor.pos);
       const ctl = new ReaderController(book, chapter, model, layout, cursor, marks, new Set(st.quizzed), settings, {
-        changed: () => {
-          scrollReq.current = true;
+        changed: (moved) => {
+          if (moved) scrollReq.current = true;
           tick();
         },
         quiz: (section) => openQuiz(ctl, section),
         flag: (f) => setFlag(f),
         probe: () => setProbe(true),
         toast: (m) => setToast(m),
-      });
-      marks.onMount = () => ensureVisible(false);
+        presence: (p, awayMs) => {
+          setPresence(p);
+          if (p === 'present' && awayMs > 60000) setToast(`Welcome back. You were away ${Math.round(awayMs / 60000)} min; the timer waited for you.`);
+        },
+        phaseEnd: (e, next) => {
+          if (next === 'break') setBrk({ over: false });
+          else if (e.kind === 'break' && e.completed) setBrk({ over: true });
+          tick();
+        },
+      }, sprints);
+      // only when we were waiting for the cursor's page; otherwise scrolling around would snap back
+      marks.onMount = (pageIdx) => {
+        if (pendingScroll.current === pageIdx) ensureVisible(false);
+      };
       await db.progress.put({ bookId, current: chapter });
       if (!alive) return ctl.dispose();
       ctlRef.current = ctl;
@@ -90,17 +118,41 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
         void ctlRef.current?.flush();
       }
     };
+    // presence: any key, click, scroll or mouse movement means you're here
+    let lastMove = 0;
+    const act = (e: Event) => {
+      if (e.type === 'pointermove') {
+        if (Date.now() - lastMove < 1000) return;
+        lastMove = Date.now();
+      }
+      ctlRef.current?.activity();
+    };
+    const vis = () => {
+      const p = ctlRef.current?.presence;
+      if (!p) return;
+      if (document.visibilityState === 'hidden' || !document.hasFocus()) p.hidden(Date.now());
+      else p.visible(Date.now());
+    };
+    const evs = ['keydown', 'pointerdown', 'pointermove', 'wheel', 'touchstart'];
+    for (const ev of evs) window.addEventListener(ev, act, { passive: true, capture: true });
     window.addEventListener('resize', r);
+    window.addEventListener('blur', vis);
+    window.addEventListener('focus', vis);
     document.addEventListener('visibilitychange', hide);
+    document.addEventListener('visibilitychange', vis);
     return () => {
+      for (const ev of evs) window.removeEventListener(ev, act, { capture: true });
       window.removeEventListener('resize', r);
+      window.removeEventListener('blur', vis);
+      window.removeEventListener('focus', vis);
       document.removeEventListener('visibilitychange', hide);
+      document.removeEventListener('visibilitychange', vis);
     };
   }, []);
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 4000);
+    const t = setTimeout(() => setToast(null), toast.length > 70 ? 7000 : 4000);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -111,10 +163,12 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
     const w = Math.min(ctl.cursor.pos, ctl.n - 1);
     const r = ctl.marks.rect(w);
     if (!r) {
+      pendingScroll.current = ctl.layout.page[w];
       const page = document.querySelector(`.page[data-page="${ctl.layout.page[w]}"]`);
       page?.scrollIntoView({ block: 'center' });
       return;
     }
+    pendingScroll.current = null;
     const top = 110;
     if (r.top < top || r.bottom > window.innerHeight * 0.72) window.scrollBy({ top: r.top - window.innerHeight * 0.36, behavior: smooth ? 'smooth' : 'auto' });
   }, []);
@@ -157,29 +211,76 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
     }
   };
 
-  // ---------- clarify ----------
-  const runClarify = async (view: ClarifyView & { id?: number }) => {
+  // ---------- explain / ask / key points ----------
+  const runAssist = async (view: AssistView) => {
     const ctl = ctlRef.current;
     if (!ctl) return;
-    setClar({ ...view, loading: true, error: undefined });
+    setAssist({ ...view, loading: true, error: undefined });
     try {
-      const r = await ctl.clarify(view, view.id);
-      setClar((c) => (c && c.word === view.word ? { ...view, id: r.id, loading: false, messages: [...view.messages, { role: 'assistant', text: r.text }] } : c));
+      const r = await ctl.assist(view, view.id);
+      setAssist((c) => (c && c.from === view.from && c.mode === view.mode ? { ...view, id: r.id || undefined, loading: false, messages: [...view.messages, { role: 'assistant', text: r.text }] } : c));
     } catch (e) {
-      setClar((c) => (c && c.word === view.word ? { ...view, loading: false, error: String((e as Error)?.message ?? e) } : c));
+      setAssist((c) => (c && c.from === view.from && c.mode === view.mode ? { ...view, loading: false, error: String((e as Error)?.message ?? e) } : c));
     }
   };
 
-  const explain = (word: number, reason: ClarifyView['reason'], reads: number) => {
+  const openAssist = (mode: AssistMode, from: number, to: number, reason?: AssistView['reason'], reads = 0) => {
     const ctl = ctlRef.current;
     if (!ctl) return;
     setFlag(null);
-    const view = { word, paragraph: ctl.paragraphText(word), reason, reads, messages: [], loading: true };
+    setCards(null);
+    const view: AssistView = { mode, from, to, passage: wordsText(ctl.model.stream, from, to), reason, reads, messages: [], loading: false };
+    if (!aiAvailable(ctl.settings)) return setAssist({ ...view, error: 'Add a free Gemini or Groq key in Settings to use the AI tutor.' });
+    if (mode === 'ask') return setAssist(view); // wait for the question
+    void runAssist(view);
+  };
+
+  const explain = (word: number, reason: AssistView['reason'], reads: number) => {
+    const ctl = ctlRef.current;
+    if (!ctl) return;
+    const [a, b] = paragraphAt(ctl.model.stream, word);
+    openAssist('explain', a, b, reason, reads);
+  };
+
+  // ---------- selection & cards ----------
+  const select = (range: [number, number] | null) => {
+    ctlRef.current?.marks.select(range);
+    setSel(range);
+  };
+
+  const draftCards = async (from: number, to: number) => {
+    const ctl = ctlRef.current;
+    if (!ctl) return;
+    setAssist(null);
+    const view: CardDraftView = { from, to, passage: wordsText(ctl.model.stream, from, to), status: 'loading', drafts: [] };
     if (!aiAvailable(ctl.settings)) {
-      setClar({ ...view, loading: false, error: 'Add a free Gemini or Groq key in Settings to get explanations.' });
+      setCards({ ...view, status: 'ready', drafts: [{ q: '', a: '', keep: true }] }); // write it yourself
       return;
     }
-    void runClarify(view);
+    setCards(view);
+    try {
+      const drafts = await ctl.draftCards(from, to);
+      setCards((c) => (c && c.from === from ? { ...c, status: 'ready', drafts: drafts.map((d) => ({ ...d, keep: true })) } : c));
+    } catch (e) {
+      setCards((c) => (c && c.from === from ? { ...c, status: 'error', error: String((e as Error)?.message ?? e), drafts: [{ q: '', a: '', keep: true }] } : c));
+    }
+  };
+
+  const saveCards = async () => {
+    const ctl = ctlRef.current;
+    if (!ctl || !cards) return;
+    setCards({ ...cards, status: 'saving' });
+    const keep = cards.drafts.filter((d) => d.keep && d.q.trim() && d.a.trim()).map((d) => ({ q: d.q.trim(), a: d.a.trim() }));
+    const n = await ctl.saveCards(keep, cards.from, cards.to, 'manual');
+    setCards(null);
+    select(null);
+    setToast(`⭐ Saved ${n} card${n === 1 ? '' : 's'}. First review: today, in Review.`);
+  };
+
+  const selectionAction = (a: 'card' | 'ask' | 'points' | 'explain') => {
+    if (!sel) return;
+    if (a === 'card') void draftCards(sel[0], sel[1]);
+    else openAssist(a, sel[0], sel[1], a === 'explain' ? 'asked' : undefined);
   };
 
   // ---------- keys ----------
@@ -202,8 +303,13 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
       } else if (e.key === '?' && !quiz) {
         e.preventDefault();
         explain(Math.min(ctl.cursor.pos, ctl.n - 1), 'asked', 0);
-      } else if (e.key === 'Escape' && clar) {
-        setClar(null);
+      } else if (sel && !quiz && !e.ctrlKey && !e.metaKey && !e.altKey && ['c', 'a', 'k', 'e'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        selectionAction(({ c: 'card', a: 'ask', k: 'points', e: 'explain' } as const)[e.key.toLowerCase() as 'c' | 'a' | 'k' | 'e']);
+      } else if (e.key === 'Escape') {
+        if (cards) setCards(null);
+        else if (assist) setAssist(null);
+        else if (sel) select(null);
       }
     };
     window.addEventListener('keydown', k);
@@ -231,10 +337,10 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
   const { book, doc, model, ctl } = data;
   const st = ctl.stats();
   const n = ctl.n;
-  const width = Math.min(ctl.settings.pageWidth, winW - (quiz || clar ? (winW > 1300 ? 460 : 32) : 32));
+  const panelOpen = !!(quiz || cards || assist);
+  const width = Math.min(ctl.settings.pageWidth, winW - (panelOpen ? (winW > 1300 ? 460 : 32) : 32));
   const s = model.stream;
   const nextChapter = chapter + 1 < book.chapters.length ? chapter + 1 : null;
-  const panelOpen = !!(quiz || clar);
 
   return (
     <div className={`reader theme-${theme}${panelOpen ? ' with-panel' : ''}`}>
@@ -252,6 +358,7 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
           <Stat v={st.effective === null ? '–' : Math.round(st.effective)} l="effective" title="Effective reading rate = words per minute × comprehension" />
           <Stat v={st.words ? st.regressions.toFixed(1) : '–'} l="back/100w" title="Times you went back, per 100 words read" />
         </div>
+        <FocusClock ctl={ctl} todayMs={todayMs} />
         <div className="tb-actions">
           <div className={'pacer' + (ctl.pacing ? ' on' : '')}>
             <button className="toggle" onClick={() => ctl.togglePacer()} title="Pacer: moves the highlight at a set speed (Space)">
@@ -296,7 +403,8 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
       {hint && (
         <div className="banner">
           <kbd>Shift</kbd>+<kbd>→</kbd> next word · <kbd>Shift</kbd>+<kbd>↓</kbd> rest of the line · <kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>↑</kbd> go back ·
-          click a word to reread from there · <kbd>Space</kbd> pacer · <kbd>?</kbd> explain{' '}
+          click a word to reread from there · drag across words (or double-click a paragraph) to make a card, ask, or get key points ·{' '}
+          <kbd>Space</kbd> pacer · <kbd>?</kbd> explain{' '}
           <button className="ghost small" onClick={dismissHint}>
             Got it
           </button>
@@ -304,7 +412,18 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
       )}
 
       <div className="pages" style={{ width }}>
-        <Pages doc={doc} pages={model.pages} marks={ctl.marks} width={width} onWordClick={(w) => ctl.jump(w)} />
+        <Pages
+          doc={doc}
+          pages={model.pages}
+          marks={ctl.marks}
+          width={width}
+          onWordClick={(w) => {
+            if (sel) select(null);
+            ctl.jump(w);
+          }}
+          onSelect={(r) => select(r)}
+          onParagraph={(w) => select(paragraphAt(model.stream, w))}
+        />
         {ctl.cursor.pos >= n && !quiz && (
           <div className="chapter-end">
             <h2>Chapter finished 🎉</h2>
@@ -331,19 +450,30 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
           onSkip={() => void closeQuiz()}
         />
       )}
-      {clar && !quiz && (
-        <ClarifyPanel
-          view={clar}
-          onClose={() => {
-            ctl.unflag(clar.word);
-            setClar(null);
-          }}
-          onRetry={() => void runClarify({ ...clar, messages: clar.messages })}
-          onAsk={(q) => void runClarify({ ...clar, messages: [...clar.messages, { role: 'user', text: q }] })}
+      {cards && !quiz && (
+        <CardPanel
+          view={cards}
+          onChange={(drafts) => setCards({ ...cards, drafts })}
+          onSave={() => void saveCards()}
+          onClose={() => setCards(null)}
+          onRetry={() => void draftCards(cards.from, cards.to)}
         />
       )}
+      {assist && !quiz && !cards && (
+        <AssistPanel
+          view={assist}
+          onClose={() => {
+            if (assist.mode === 'explain') ctl.unflag(assist.from);
+            setAssist(null);
+          }}
+          onRetry={() => void runAssist(assist)}
+          onAsk={(q) => void runAssist({ ...assist, messages: [...assist.messages, { role: 'user', text: q }] })}
+          onCard={() => void draftCards(assist.from, assist.to)}
+        />
+      )}
+      {sel && !quiz && !cards && !assist && <SelectionBar words={sel[1] - sel[0]} onAction={selectionAction} onClear={() => select(null)} />}
 
-      {flag && !quiz && !clar && (
+      {flag && !quiz && !assist && !cards && !sel && (
         <div className="flag-chip" role="status">
           <span>{flag.reason === 'rereads' ? `🤔 You've read this part ${flag.reads}×.` : '🐢 That paragraph took you a while.'} Want it explained?</span>
           <button className="primary small" onClick={() => explain(flag.word, flag.reason, flag.reads)}>
@@ -370,7 +500,61 @@ export function Read({ bookId, chapter, at }: { bookId: number; chapter: number;
           }}
         />
       )}
+      {brk && (
+        <BreakModal
+          remaining={() => ctl.pomo.remaining}
+          long={ctl.pomo.planned > ctl.settings.breakMin * 60000}
+          sprint={ctl.pomo.sprints}
+          over={brk.over}
+          onSkip={() => {
+            ctl.endBreak();
+            setBrk(null);
+          }}
+          onBack={() => {
+            ctl.endBreak();
+            setBrk(null);
+          }}
+        />
+      )}
+      {presence !== 'present' && !brk && <StillHere away={presence === 'away'} onBack={() => ctl.activity()} />}
       {toast && <div className="toast-msg">{toast}</div>}
+    </div>
+  );
+}
+
+/** Pomodoro and today's reading time. Re-renders itself every second without touching the pages. */
+function FocusClock({ ctl, todayMs }: { ctl: ReaderController; todayMs: number }) {
+  const [, tick] = useReducer((x: number) => x + 1, 0);
+  useEffect(() => {
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, []);
+  const p = ctl.pomo;
+  const minutes = Math.floor((todayMs + ctl.presence.presentMs) / 60000);
+  const goal = ctl.settings.dailyMinutes;
+  return (
+    <div className="focus-clock">
+      {ctl.settings.pomodoroOn && (
+        <button
+          className={'toggle tomato' + (p.phase === 'focus' ? ' on' : '')}
+          title={p.phase === 'focus' ? 'Focus sprint: counts only while you are here. Click to stop.' : 'Start a focus sprint (also starts with your first move)'}
+          onClick={() => {
+            if (p.phase === 'focus') p.stop(Date.now());
+            else if (p.phase === 'idle') p.startFocus(Date.now());
+            tick();
+          }}
+        >
+          🍅 {p.phase === 'idle' ? `${ctl.settings.focusMin}:00` : clock(p.remaining)}
+          {ctl.presence.state === 'away' && p.phase === 'focus' ? ' ⏸' : ''}
+        </button>
+      )}
+      <div className="stat" title="Reading time today (only while you're at the screen) and your daily goal">
+        <div className="stat-v">
+          {minutes}
+          <span className="muted">/{goal}</span>
+        </div>
+        <div className="stat-l">min today{p.sprints ? ` · ${p.sprints}🍅` : ''}</div>
+      </div>
     </div>
   );
 }
