@@ -86,11 +86,22 @@ export async function groqComplete(cfg: ProviderConfig, req: CompleteReq, signal
   const body = {
     model: cfg.model,
     temperature: req.temperature ?? 0.4,
-    max_tokens: req.maxTokens ?? 2048,
+    max_tokens: Math.max(req.maxTokens ?? 2048, 4096), // reasoning models spend some of this thinking
+    ...(/gpt-oss/.test(cfg.model) ? { reasoning_effort: 'low' } : {}),
     messages: [{ role: 'system', content: req.system }, ...req.messages.map((m) => ({ role: m.role, content: m.text }))],
     ...(req.json ? { response_format: { type: 'json_object' } } : {}),
   };
-  const j = (await post('https://api.groq.com/openai/v1/chat/completions', body, { Authorization: `Bearer ${cfg.key}` }, signal)) as {
+  const send = (b: typeof body) => post('https://api.groq.com/openai/v1/chat/completions', b, { Authorization: `Bearer ${cfg.key}` }, signal);
+  let raw: unknown;
+  try {
+    raw = await send(body);
+  } catch (e) {
+    // some models don't support JSON mode or reasoning settings; replies are parsed leniently anyway
+    if (!(e instanceof AiError && e.status === 400 && /response_format|json|reasoning/i.test(e.message))) throw e;
+    const { response_format: _rf, reasoning_effort: _re, ...plain } = body as typeof body & { response_format?: unknown; reasoning_effort?: unknown };
+    raw = await send(plain as typeof body);
+  }
+  const j = raw as {
     choices?: { message?: { content?: string } }[];
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   };

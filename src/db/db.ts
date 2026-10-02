@@ -203,7 +203,7 @@ export const DEFAULT_SETTINGS: Settings = {
   geminiKey: '',
   geminiModel: 'gemini-flash-latest',
   groqKey: '',
-  groqModel: 'llama-3.3-70b-versatile',
+  groqModel: 'openai/gpt-oss-120b',
   questionsPerSection: 2,
   interleaveChance: 0.3,
   minSectionWords: 80,

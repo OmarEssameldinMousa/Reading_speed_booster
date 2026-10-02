@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { readTo, moveTo, isRegression, timesRead, type CursorState } from '../reader/cursor';
 import { totals, recentWpm, dwell, rangeStats, median, type MoveEvent } from '../reader/metrics';
-import { complete } from '../ai/router';
+import { complete, pickModel, resetCooldowns } from '../ai/router';
 import { AiError, type ProviderName } from '../ai/providers';
 import { checkQuiz, checkGrades, fallbackGrade, locateQuote, quizPrompt } from '../ai/prompts';
 import { DEFAULT_SETTINGS } from '../db/db';
@@ -72,6 +72,8 @@ describe('metrics', () => {
   });
 });
 
+beforeEach(() => resetCooldowns());
+
 describe('AI router', () => {
   const settings = { ...DEFAULT_SETTINGS, geminiKey: 'g', groqKey: 'q' };
   const ok = (text: string) => async () => ({ text, tokensIn: 1, tokensOut: 1 });
@@ -106,10 +108,10 @@ describe('AI router', () => {
         seen.push(p);
         return { system: '', messages: [] };
       },
-      { settings, impls, check: (t) => JSON.parse(t) as { x: number } },
+      { settings, impls, check: (t) => JSON.parse(t) as { x: number }, sleep: async () => {} },
     );
     expect(r.value.x).toBe(1);
-    expect(seen).toEqual(['gemini', 'groq']);
+    expect(seen).toEqual(['gemini', 'gemini', 'groq']); // one retry, then the other provider
   });
 
   it('explains missing keys and reports all errors', async () => {
@@ -122,13 +124,119 @@ describe('AI router', () => {
         throw new AiError('HTTP 401', 401, false);
       },
     };
-    await expect(complete(() => ({ system: '', messages: [] }), { settings, impls })).rejects.toThrow(/gemini: HTTP 500 · groq: HTTP 401/);
+    await expect(complete(() => ({ system: '', messages: [] }), { settings, impls, sleep: async () => {} })).rejects.toThrow(/gemini: HTTP 500 · groq: HTTP 401/);
   });
 
   it('honors the primary setting and skips providers without keys', async () => {
     const impls = { gemini: ok('g'), groq: ok('q') };
     expect((await complete(() => ({ system: '', messages: [] }), { settings: { ...settings, primary: 'groq' }, impls })).provider).toBe('groq');
     expect((await complete(() => ({ system: '', messages: [] }), { settings: { ...settings, geminiKey: '' }, impls })).provider).toBe('groq');
+  });
+});
+
+describe('AI router recovery', () => {
+  const settings = { ...DEFAULT_SETTINGS, geminiKey: 'g', groqKey: 'q', geminiModel: 'gemini-flash-latest', groqModel: 'llama-3.3-70b-versatile' };
+  const req = () => ({ system: '', messages: [] });
+  const sleep = async () => {};
+  const log = () => {
+    const calls: string[] = [];
+    const impl = (name: string, f: (model: string, n: number) => string) => async (cfg: { model: string }) => {
+      calls.push(`${name}:${cfg.model}`);
+      return { text: f(cfg.model, calls.length), tokensIn: 0, tokensOut: 0 };
+    };
+    return { calls, impl };
+  };
+
+  it('retries a busy model once, then succeeds', async () => {
+    const { calls, impl } = log();
+    const impls = {
+      gemini: impl('gemini', (_m, n) => {
+        if (n === 1) throw new AiError('HTTP 503: high demand', 503, true);
+        return 'ok';
+      }),
+      groq: impl('groq', () => 'groq'),
+    };
+    const r = await complete(req, { settings, impls, sleep });
+    expect(r.provider).toBe('gemini');
+    expect(calls).toEqual(['gemini:gemini-flash-latest', 'gemini:gemini-flash-latest']);
+  });
+
+  it('moves to a backup model when one stays overloaded, before switching provider', async () => {
+    const { calls, impl } = log();
+    const impls = {
+      gemini: impl('gemini', (m) => {
+        if (m === 'gemini-flash-latest') throw new AiError('HTTP 503', 503, true);
+        return 'lite';
+      }),
+      groq: impl('groq', () => 'groq'),
+    };
+    const r = await complete(req, { settings, impls, sleep });
+    expect(r.value).toBe('lite');
+    expect(calls).toEqual(['gemini:gemini-flash-latest', 'gemini:gemini-flash-latest', 'gemini:gemini-flash-lite-latest']);
+  });
+
+  it('replaces a retired model with one the key can use', async () => {
+    const { calls, impl } = log();
+    const impls = {
+      gemini: impl('gemini', () => {
+        throw new AiError('HTTP 503', 503, true);
+      }),
+      groq: impl('groq', (m) => {
+        if (m === 'llama-3.3-70b-versatile') throw new AiError('HTTP 404: The model does not exist', 404, true);
+        return m;
+      }),
+    };
+    const listModels = async () => ['whisper-large-v3', 'qwen/qwen3-32b', 'openai/gpt-oss-20b'];
+    const r = await complete(req, { settings, impls, sleep, listModels });
+    expect(r).toMatchObject({ provider: 'groq', value: 'openai/gpt-oss-20b' });
+    expect(calls.filter((c) => c.startsWith('groq'))).toEqual(['groq:llama-3.3-70b-versatile', 'groq:openai/gpt-oss-20b']);
+  });
+
+  it('stops trying models when the key is bad', async () => {
+    const { calls, impl } = log();
+    const impls = {
+      gemini: impl('gemini', () => {
+        throw new AiError('HTTP 400: API key not valid. Please pass a valid API key.', 400, false);
+      }),
+      groq: impl('groq', () => 'groq'),
+    };
+    const r = await complete(req, { settings, impls, sleep });
+    expect(r.provider).toBe('groq');
+    expect(calls.filter((c) => c.startsWith('gemini'))).toHaveLength(1);
+  });
+
+  it('skips the next model on a daily quota without retrying', async () => {
+    const { calls, impl } = log();
+    const impls = {
+      gemini: impl('gemini', (m) => {
+        if (m === 'gemini-flash-latest') throw new AiError('HTTP 429: You exceeded your current quota', 429, true);
+        return 'lite';
+      }),
+      groq: impl('groq', () => 'groq'),
+    };
+    await complete(req, { settings, impls, sleep });
+    expect(calls).toEqual(['gemini:gemini-flash-latest', 'gemini:gemini-flash-lite-latest']);
+  });
+
+  it('tries a provider that just failed everywhere last for a while', async () => {
+    const { calls, impl } = log();
+    const impls = {
+      gemini: impl('gemini', () => {
+        throw new AiError('HTTP 503', 503, true);
+      }),
+      groq: impl('groq', () => 'groq'),
+    };
+    await complete(req, { settings, impls, sleep, listModels: async () => [] });
+    calls.length = 0;
+    await complete(req, { settings, impls, sleep });
+    expect(calls).toEqual(['groq:llama-3.3-70b-versatile']);
+  });
+
+  it('picks sensible replacement models', () => {
+    expect(pickModel('groq', ['whisper-large-v3', 'llama-3.1-8b-instant', 'openai/gpt-oss-120b'])).toBe('openai/gpt-oss-120b');
+    expect(pickModel('groq', ['whisper-large-v3', 'some/new-model'])).toBe('some/new-model');
+    expect(pickModel('gemini', ['gemini-3.5-flash-image', 'gemini-3.5-flash'])).toBe('gemini-3.5-flash');
+    expect(pickModel('gemini', ['gemini-flash-latest'], ['gemini-flash-latest'])).toBe(null);
   });
 });
 

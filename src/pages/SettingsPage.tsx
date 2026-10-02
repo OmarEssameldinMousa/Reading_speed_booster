@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, dayKey, DEFAULT_SETTINGS, getSettings, resetEverything, saveSettings, type Settings } from '../db/db';
 import { Modal } from '../reader/panels';
-import { IMPLS } from '../ai/router';
+import { complete } from '../ai/router';
 import { listModels, type ProviderName } from '../ai/providers';
 
 type Key = keyof Settings;
@@ -208,7 +208,7 @@ const PROVIDERS: { name: ProviderName; title: string; keyField: 'geminiKey' | 'g
     keyField: 'groqKey',
     modelField: 'groqModel',
     url: 'https://console.groq.com/keys',
-    note: 'Free tier with fast open models (Llama, Qwen). Used when Gemini is unavailable or out of quota. Smaller per-minute limits, so long sections are trimmed.',
+    note: 'Free tier with fast open models (GPT-OSS, Qwen, Llama). Used when Gemini is unavailable or out of quota. Smaller per-minute limits, so long sections are trimmed.',
   },
 ];
 
@@ -291,8 +291,15 @@ function ProviderFields({ p, s, set }: { p: (typeof PROVIDERS)[number]; s: Setti
     setTest(null);
     const t0 = performance.now();
     try {
-      const r = await IMPLS[p.name]({ key: key.trim(), model: model.trim() }, { system: 'You are a connection test.', messages: [{ role: 'user', text: 'Reply with the single word OK.' }], maxTokens: 512 });
-      setTest({ ok: true, msg: `Connected in ${Math.round(performance.now() - t0)} ms: "${r.text.trim().slice(0, 40)}"` });
+      // only this provider, with the same retries and retired-model recovery the reader uses
+      const only = { ...s, aiOn: true, primary: p.name, geminiKey: '', groqKey: '', [p.keyField]: key.trim(), [p.modelField]: model.trim() };
+      const r = await complete(() => ({ system: 'You are a connection test.', messages: [{ role: 'user', text: 'Reply with the single word OK.' }], maxTokens: 512 }), { settings: only });
+      const ms = Math.round(performance.now() - t0);
+      if (r.model !== model.trim()) {
+        setModel(r.model);
+        set(p.modelField, r.model);
+        setTest({ ok: true, msg: `Connected in ${ms} ms using ${r.model} ("${model.trim()}" wasn't available, so it was replaced).` });
+      } else setTest({ ok: true, msg: `Connected in ${ms} ms: "${r.text.trim().slice(0, 40)}"` });
       listModels(p.name, key.trim()).then(setModels, () => {});
     } catch (e) {
       setTest({ ok: false, msg: String((e as Error).message ?? e) });
