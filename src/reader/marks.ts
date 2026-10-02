@@ -32,6 +32,8 @@ export class Marks {
   private mounted = new Map<number, HTMLDivElement[]>();
   private cursorWord = -1;
   private sel: [number, number] | null = null;
+  private caret: HTMLDivElement | null = null;
+  private caretTimer = 0;
   onMount?: (pageIdx: number) => void;
 
   constructor(
@@ -72,12 +74,14 @@ export class Marks {
     }
     layer.appendChild(frag);
     this.mounted.set(pageIdx, all);
+    if (this.els[this.cursorWord]?.some((d) => d.parentElement === layer)) this.placeCaret(false);
     this.onMount?.(pageIdx);
   }
 
   unmountPage(pageIdx: number) {
     const all = this.mounted.get(pageIdx);
     if (!all) return;
+    if (this.caret && all[0] && this.caret.parentElement === all[0].parentElement) this.caret.remove();
     for (const d of all) d.remove();
     for (const w of this.boxesOf(pageIdx).keys()) {
       const left = this.els[w]?.filter((e) => e.isConnected);
@@ -97,8 +101,21 @@ export class Marks {
     }
   }
 
-  refresh(from: number, to: number) {
-    for (let w = Math.max(0, from); w < Math.min(to, this.els.length); w++) this.paint(w);
+  /**
+   * Repaint [from, to). With `sweep`, words that just got darker fill in one after another, left to
+   * right, so a line read with Shift+↓ is swept rather than switched on all at once.
+   */
+  refresh(from: number, to: number, sweep = false) {
+    const a = Math.max(0, from);
+    const b = Math.min(to, this.els.length);
+    const step = sweep && b - a > 1 ? Math.min(28, 220 / (b - a)) : 0;
+    for (let w = a; w < b; w++) {
+      for (const d of this.els[w] ?? []) {
+        if (step) d.style.setProperty('--delay', `${Math.round((w - a) * step)}ms`);
+        else d.style.removeProperty('--delay');
+      }
+      this.paint(w);
+    }
   }
 
   setCursor(w: number) {
@@ -106,6 +123,49 @@ export class Marks {
     this.cursorWord = w;
     this.paint(prev);
     this.paint(w);
+    this.placeCaret(true);
+  }
+
+  /**
+   * The reading caret: one element that glides to the next word. Along a line it slides;
+   * to a new line or page it fades out and back in at the new spot instead of cutting across.
+   */
+  private placeCaret(animate: boolean) {
+    const target = this.els[this.cursorWord]?.[0];
+    const layer = target?.parentElement;
+    if (!target || !layer) {
+      this.caret?.remove();
+      return;
+    }
+    if (!this.caret) {
+      this.caret = document.createElement('div');
+      this.caret.className = 'caret';
+      this.caret.setAttribute('aria-hidden', 'true');
+    }
+    const c = this.caret;
+    const sameLayer = c.parentElement === layer;
+    const sameLine = sameLayer && Math.abs(parseFloat(c.style.top) - parseFloat(target.style.top)) < parseFloat(target.style.height) / 2;
+    const place = () => {
+      c.style.left = target.style.left;
+      c.style.top = target.style.top;
+      c.style.width = target.style.width;
+      c.style.height = target.style.height;
+    };
+    clearTimeout(this.caretTimer);
+    if (animate && sameLine) {
+      c.classList.remove('jump', 'hop');
+      place();
+      return;
+    }
+    // jump without sliding, then fade in
+    c.classList.add('jump');
+    c.classList.remove('hop');
+    if (!sameLayer) layer.appendChild(c);
+    place();
+    void c.offsetWidth; // apply the new position before re-enabling transitions
+    c.classList.remove('jump');
+    if (animate) c.classList.add('hop');
+    this.caretTimer = window.setTimeout(() => c.classList.remove('hop'), 260);
   }
 
   /** Show a selection [from, to), or clear it with null. */

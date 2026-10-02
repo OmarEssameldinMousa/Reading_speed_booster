@@ -973,29 +973,76 @@ button.danger-btn:hover:not(:disabled) {
   border-radius: 2px;
   mix-blend-mode: multiply;
   cursor: pointer;
-  transition: background-color 0.18s;
+  --fill: transparent;
+}
+/* the highlight fills in from the left; --delay staggers words along a line */
+.marks .w::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--fill);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition:
+    transform 0.16s cubic-bezier(0.25, 0.8, 0.3, 1) var(--delay, 0ms),
+    background-color 0.35s ease var(--delay, 0ms);
+}
+.marks .w:not(.r0)::before {
+  transform: scaleX(1);
 }
 .marks .w:hover {
   box-shadow: inset 0 -2px 0 rgb(42 120 214 / 45%);
 }
 .marks .r1 {
-  background: var(--r1);
+  --fill: var(--r1);
 }
 .marks .r2 {
-  background: var(--r2);
+  --fill: var(--r2);
 }
 .marks .r3 {
-  background: var(--r3);
+  --fill: var(--r3);
 }
 .marks .r4 {
-  background: var(--r4);
+  --fill: var(--r4);
 }
-.marks .w.cur {
-  box-shadow: inset 0 -3px 0 var(--cur);
-  background: rgb(42 120 214 / 16%);
-}
-.marks .w.flag:not(.cur) {
+.marks .w.flag:not(.sel) {
   box-shadow: inset 0 -2px 0 rgb(200 65 58 / 70%);
+}
+/* the reading caret glides from word to word */
+.marks .caret {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 3px;
+  background: rgb(42 120 214 / 14%);
+  box-shadow:
+    inset 0 -3px 0 var(--cur),
+    0 0 0 1px rgb(42 120 214 / 12%);
+  transition:
+    left 0.14s cubic-bezier(0.25, 0.8, 0.3, 1),
+    width 0.14s cubic-bezier(0.25, 0.8, 0.3, 1),
+    top 0.14s ease,
+    height 0.14s ease,
+    opacity 0.2s ease;
+}
+.marks .caret.jump {
+  transition: none;
+}
+.marks .caret.hop {
+  animation: caret-in 0.24s ease-out;
+}
+@keyframes caret-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marks .w::before,
+  .marks .caret {
+    transition: none;
+    animation: none;
+  }
 }
 .reader.theme-night .marks {
   --r1: rgb(110 90 0 / 70%);

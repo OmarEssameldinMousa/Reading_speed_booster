@@ -154,7 +154,7 @@ export class ReaderController {
       }
     }
     void this.ensureSession();
-    this.marks.refresh(Math.min(m.from, m.to), Math.max(m.from, m.to));
+    this.marks.refresh(Math.min(m.from, m.to), Math.max(m.from, m.to), reading);
     this.marks.setCursor(this.cursor.pos);
     this.scheduleSave();
     if (reading) this.afterRead(m.from, m.to);
